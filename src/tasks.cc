@@ -36,11 +36,10 @@ void Task::RegisterTaskThreadToSchedule() {
 
 void SortTask::RunTask() {
   //TaskThread* thread = Thread();
-  assert(sort_array_->Count() > 0);
   USE_THREAD(Thread());
   Time time(true);
   size_t block_size = fblock_ptr_->GetBlockSize();
-  Debug_log_2(std::cout << "block size: " << block_size 
+  Debug_log_2(std::cout << "block size: " << block_size
             << " lines: " << line_num_ << " " << time.Snap() << std::endl;);
   TopkSort sort;
   if (sort_array_ == nullptr) {
@@ -48,6 +47,10 @@ void SortTask::RunTask() {
     Debug_log_2(std::cout << "Create TopSort readlins " << time.Snap() << std::endl;);
   } else {
     sort.InitTopkSort(fblock_ptr_, sort_array_);
+  }
+
+  if (sort_array_->Count() == 0) {
+    return;
   }
 
   // send topk task start message
