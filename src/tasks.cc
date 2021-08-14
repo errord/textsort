@@ -44,6 +44,7 @@ void SortTask::RunTask() {
   TopkSort sort;
   if (sort_array_ == nullptr) {
     sort.InitTopkSort(fblock_ptr_, line_num_);
+    sort_array_ = const_cast<SortArray*>(sort.GetSortArray());
     Debug_log_2(std::cout << "Create TopSort readlins " << time.Snap() << std::endl;);
   } else {
     sort.InitTopkSort(fblock_ptr_, sort_array_);
