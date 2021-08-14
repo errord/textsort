@@ -62,6 +62,7 @@ struct Line {
 
   };
   void InitLinePtr(char* p) {
+    assert((p - GetBaseAddressPointer()) < 16777216);
     offset = p - GetBaseAddressPointer();
   };
   const char* Ptr() const {
