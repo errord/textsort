@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
   config->top_k = 100000;
   config->load_data_mode = textsort::Config::LoadDataMode::Sequence;
   config->sequence_load_immediate = true;
-  config->write_buff_size = 1024*100000; // 100m
+  config->write_buff_size = 1024*800000; // 100m
 
   textsort::TextSort* tsort = new textsort::TextSort();
   std::cout << "TextSort Running..." << std::endl;
