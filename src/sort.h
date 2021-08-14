@@ -77,6 +77,10 @@ public:
     return count_;
   }
 
+  size_t Size() const {
+    return size_;
+  }
+
   std::string DebugString(bool inverted=false) const;
 
 private:

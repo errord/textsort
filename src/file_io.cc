@@ -54,6 +54,7 @@ void FileBlock::ReadLines(SortArray* array) {
   while (pos_ < block_size_) {
     // safe method, check array index range
     // ReadLine(&(*array)[line_num_].line, (char*)fblock_ptr_, &pos_, block_size_);
+    assert(line_num_ <= array->Size());
     ReadLine(&items->line, (char*)fblock_ptr_, &pos_, block_size_);
     items->idx = line_num_++;
     items++;
