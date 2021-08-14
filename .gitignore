@@ -1,4 +1,9 @@
 datafile
+all
+core.*
+test
+textsort
+
 
 # Prerequisites
 *.d
