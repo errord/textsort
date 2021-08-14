@@ -73,7 +73,7 @@ void TextSort::BuildParallelLoadDataPipeline(MergeScheduler* merge_scheduler) {
         merge_scheduler, block, config_->fileblock_line_num, config_->top_k, task_id++);
     tasks->Push(task);
     task = new MergeTask(merge_scheduler, false);
-    tasks->Append(task);        
+    tasks->Append(task);
     thread_pool_.AddTask(tasks);
     block = block->NextBlock();
   }
