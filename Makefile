@@ -2,8 +2,8 @@ LIBRARY_INCLUDE=./src
 LIBRARY_PATH=./
 SRC_PATH=./src
 TESTS_PATH=./tests
-OPT=-O3 -DDEBUG -std=c++11
-#OPT=-g -DDEBUG -std=c++11
+#OPT=-O3 -DDEBUG -std=c++11
+OPT=-g -DDEBUG -std=c++11
 
 all: textsort test
 

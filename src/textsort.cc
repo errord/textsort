@@ -30,9 +30,9 @@ int main(int argc, char* argv[]) {
   config->init_merge_thread_num = 3;
   config->fileblock_line_num = 20000000;
   config->top_k = 100000;
-  config->load_data_mode = textsort::Config::LoadDataMode::Sequence;
+  config->load_data_mode = textsort::Config::LoadDataMode::Parallel;
   config->sequence_load_immediate = true;
-  config->write_buff_size = 1024*100000; // 100m
+  config->write_buff_size = 1024*200000; // 200m
 
   textsort::TextSort* tsort = new textsort::TextSort();
   std::cout << "TextSort Running..." << std::endl;
