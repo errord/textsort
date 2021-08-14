@@ -62,6 +62,7 @@ struct Line {
 
   };
   void InitLinePtr(char* p) {
+    std::cout << p << " " << GetBaseAddressPointer() << " " << p - GetBaseAddressPointer() << std::endl;
     assert((p - GetBaseAddressPointer()) < 16777216);
     offset = p - GetBaseAddressPointer();
   };
