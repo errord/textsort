@@ -5,6 +5,12 @@
 #ifndef TS_CORE_H_
 #define TS_CORE_H_
 
+#ifdef __linux__
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE  // posix_fadvise etc. - before ANY libc header
+#endif
+#endif
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -13,13 +19,10 @@
 #include <vector>
 #include <algorithm>
 
-#ifdef __linux__
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#endif
-
 #include <unistd.h>
+#ifdef __linux__
+#include <fcntl.h>  // posix_fadvise
+#endif
 #ifdef __APPLE__
 #include <sys/sysctl.h>
 #endif
