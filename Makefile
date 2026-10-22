@@ -31,15 +31,21 @@ test: libtextsort.a
 	g++ -c $(TESTS_PATH)/test.cc -o test.o $(OPT) -I$(LIBRARY_INCLUDE)
 	g++ -o test $(OPT) test.o -L$(LIBRARY_PATH) -ltextsort -lpthread
 
-# ---- v2 engine: parallel text pipeline (sort / unique / head / grep) ----
+# ---- v3 engine: composable text operators, unlimited data ----
+ENGINE_SRC := engine/tsort.cc engine/pipeline.cc
 ENGINE_HDRS := $(wildcard engine/*.h)
-textsort2: engine/tsort.cc engine/engine.cc $(ENGINE_HDRS)
-	g++ -O3 -DNDEBUG -march=native -std=c++17 -pthread -o textsort2 \
-		engine/tsort.cc engine/engine.cc -Iengine
+textsort3: $(ENGINE_SRC) $(ENGINE_HDRS)
+	$(CXX) -O3 -DNDEBUG -march=native -std=c++17 -pthread -o textsort3 \
+		$(ENGINE_SRC) -Iengine
+
+tools/gen_data: tools/gen_data.cc
+	$(CXX) -O3 -DNDEBUG -std=c++17 -pthread -o tools/gen_data tools/gen_data.cc
 
 clean:
 	rm -rf *.o
 	rm -rf *.a
 	rm -rf textsort
 	rm -rf textsort2
+	rm -rf textsort3
+	rm -rf tools/gen_data
 	rm -rf test
