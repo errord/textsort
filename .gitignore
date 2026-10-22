@@ -1,6 +1,7 @@
 datafile
 all
 core.*
+!engine/core.h
 test
 textsort
 
