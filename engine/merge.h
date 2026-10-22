@@ -1,100 +1,152 @@
-// merge.h - parallel sample-slice k-way merge.
+// merge.h - streaming k-way range merge.
 //
-// The key space is split into P slices by (P-1) anchor lines sampled from the
-// sorted runs. Anchor comparison is FULL-line based, so every line (including
-// equal-key or equal-content lines) lands in exactly one slice. Each slice is
-// merged independently by its own thread, and slices are written to the
-// output in order.
+// MergeRange merges the lines of all sources that fall inside the ordered
+// range [lo, hi) (empty bounds = open) and streams them through:
+//   dedup (inlined --unique / --count "uniq -c")  ->  a LineSink.
+// The sink either forwards records into a new run file (pre-merge passes)
+// or turns lines into '\n'-terminated output blocks (the ordered writer).
+// Nothing is materialized beyond one block: input size is unlimited.
 #ifndef TS_MERGE_H_
 #define TS_MERGE_H_
 
+#include "core.h"
+#include "ops.h"
 #include "run_store.h"
+#include "mergetree.h"
 
-#include <queue>
+#include <atomic>
 
 namespace ts {
 
-struct HeapItem {
-  LineView v;
-  int src;
-};
-struct HeapCmp {  // min-heap on the current line
-  bool operator()(const HeapItem& a, const HeapItem& b) const {
-    return FullLess(b.v, a.v);
-  }
+// Consumer of merged, fully post-processed output lines.
+struct LineSink {
+  // Consume one line (no '\n'). Returns false => abort the merge (head cap
+  // reached downstream / IO error).
+  virtual bool Line(const LineView& v) = 0;
+  virtual ~LineSink() = default;
 };
 
-struct SliceResult {
-  std::vector<char> out;    // emitted lines, each terminated with '\n'
-  std::string first;        // first emitted line (empty slice => empty)
-  std::string last;         // last emitted line
-  size_t count = 0;         // number of emitted lines
+struct MergeStats {
+  size_t in_lines = 0;   // lines pulled from sources within [lo, hi)
+  size_t out_lines = 0;  // lines handed to the sink
+  size_t dups = 0;       // lines collapsed by unique/count
 };
 
-// Merge all lines in [lo, hi) from every source into one ordered slice.
-//   lo.Empty()  : start from the beginning
-//   hi.Empty()  : go to the end
-// unique       : drop lines equal to their predecessor inside the slice
-// skip_equal_to: if set, additionally drop a leading run equal to this line
-//                (handles the slice boundary for --unique across slices)
-// max_out      : hard cap on emitted lines for this slice (0 = unlimited)
-inline SliceResult MergeSlice(std::vector<SortedSource>* sources,
-                              const LineView& lo, const LineView& hi,
-                              bool unique, const std::string* skip_equal_to,
-                              size_t max_out) {
-  SliceResult r;
-  const int S = (int)sources->size();
+// The core merge.
+//   sources : run sources (mem or file), all sorted in `order`
+//   lo/hi   : ordered range bounds (empty = open)
+//   dedup   : inlined post-sort operators
+//   max_out : stop after this many OUTPUT lines (-1 = unlimited)
+//   stop    : global kill switch (checked regularly; may be null)
+inline MergeStats MergeRange(const std::vector<SortedSource*>& sources,
+                             const MergeOrder& order, const LineView& lo,
+                             const LineView& hi, DedupMode dedup,
+                             long max_out, const std::atomic<bool>* stop,
+                             LineSink* sink) {
+  MergeStats st;
+  const int S = (int)sources.size();
   std::vector<MemCursor> mc(S);
   std::vector<FileCursor> fc(S);
-  std::priority_queue<HeapItem, std::vector<HeapItem>, HeapCmp> heap;
+  std::vector<int> live;
+  live.reserve(S);
 
   auto src_next = [&](int i, LineView* v) -> bool {
-    SortedSource& s = (*sources)[i];
-    return s.is_mem ? mc[i].Next(v) : fc[i].Next(v);
+    SortedSource* s = sources[i];
+    return s->is_mem ? mc[i].Next(v) : fc[i].Next(v);
   };
 
   for (int i = 0; i < S; i++) {
-    SortedSource& s = (*sources)[i];
-    if (s.Count() == 0) continue;
+    SortedSource* s = sources[i];
+    if (s->Count() == 0) continue;
     if (!lo.Empty()) {
-      s.SeekGE(lo, &mc[i], &fc[i]);
-    } else if (s.is_mem) {
-      mc[i] = MemCursor::Open(s.mem);
+      s->SeekGE(lo, order, &mc[i], &fc[i]);
+    } else if (s->is_mem) {
+      mc[i] = MemCursor::Open(s->mem);
     } else {
-      if (!fc[i].Open(s.file.path)) continue;
+      if (!fc[i].Open(s->file.path)) continue;
     }
-    LineView v;
-    if (src_next(i, &v)) heap.push({v, i});
+    live.push_back(i);
   }
 
-  LineView prev{nullptr, 0};
-  bool have_prev = false;
-  if (skip_equal_to != nullptr) {
-    prev = LineView{skip_equal_to->data(), (uint32_t)skip_equal_to->size()};
-    have_prev = true;
+  const int k = (int)live.size();
+  if (k == 0) return st;
+
+  MergeTree tree;
+  tree.Init(k, order);
+  {
+    std::vector<char> got(k, 0);
+    std::vector<LineView> first(k);
+    for (int j = 0; j < k; j++) {
+      LineView v;
+      if (src_next(live[j], &v)) { first[j] = v; got[j] = 1; }
+    }
+    for (int j = 0; j < k; j++) tree.SetInitial(j, got[j] ? first[j] : LineView());
+    tree.Build();
   }
 
-  r.out.reserve(1 << 20);
-  while (!heap.empty()) {
-    HeapItem t = heap.top();
-    heap.pop();
-    if (!hi.Empty() && !FullLess(t.v, hi)) break;  // >= hi: slice done
-    bool drop = unique && have_prev && FullEq(prev, t.v);
-    if (!drop) {
-      if (r.count == 0) r.first.assign(t.v.p, t.v.len);
-      r.out.insert(r.out.end(), t.v.p, t.v.p + t.v.len);
-      r.out.push_back('\n');
-      r.last.assign(t.v.p, t.v.len);
-      prev = LineView{r.last.data(), (uint32_t)r.last.size()};
-      have_prev = true;
-      if (++r.count == max_out) {  // head cap reached
-        break;
+  LineBox prev;        // previous distinct line (unique / count state)
+  long run_count = 0;  // current run length (count mode)
+  std::vector<char> cnt_buf;
+
+  auto emit_count = [&]() -> bool {
+    if (dedup != DedupMode::Count || !prev.valid) return true;
+    if (max_out >= 0 && (long)st.out_lines >= max_out) return false;
+    char head[24];
+    int hl = snprintf(head, sizeof(head), "%7ld ", run_count);
+    cnt_buf.clear();
+    cnt_buf.insert(cnt_buf.end(), head, head + hl);
+    cnt_buf.insert(cnt_buf.end(), prev.Data(), prev.Data() + prev.len);
+    st.out_lines++;
+    if (!sink->Line(LineView(cnt_buf.data(), (uint32_t)cnt_buf.size()))) return false;
+    return true;
+  };
+
+  for (;;) {
+    if (stop && stop->load(std::memory_order_relaxed)) break;
+    int w = tree.Winner();
+    if (w < 0) break;
+    int src = live[w];
+    LineView v = tree.WinLine();
+
+    if (!hi.Empty() && !order.KeyLess(v, hi)) break;  // past the slice range
+    // (key-level bound: one key group never straddles two slices)
+
+    st.in_lines++;
+
+    if (dedup == DedupMode::Unique) {
+      if (prev.valid && order.key.KeysEqual(prev.View(), v)) {
+        st.dups++;
+      } else {
+        prev.Set(v);
+        if (max_out >= 0 && (long)st.out_lines >= max_out) break;
+        st.out_lines++;
+        if (!sink->Line(v)) break;
       }
+    } else if (dedup == DedupMode::Count) {
+      if (prev.valid && order.key.KeysEqual(prev.View(), v)) {
+        st.dups++;
+        run_count++;
+      } else {
+        if (!emit_count()) break;
+        prev.Set(v);
+        run_count = 1;
+      }
+    } else {
+      if (max_out >= 0 && (long)st.out_lines >= max_out) break;
+      st.out_lines++;
+      if (!sink->Line(v)) break;
     }
-    LineView v2;
-    if (src_next(t.src, &v2)) heap.push({v2, t.src});
+
+    LineView nv;
+    if (src_next(src, &nv)) tree.Advance(w, nv);
+    else tree.Kill(w);
   }
-  return r;
+  emit_count();  // final pending run for count mode
+
+  for (int i : live)
+    if (!sources[i]->is_mem) fc[i].Close();
+
+  return st;
 }
 
 }  // namespace ts
