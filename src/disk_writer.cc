@@ -37,7 +37,9 @@ TaskMessage* DiskWriter::GetDiskWriteMessage() {
 
 void DiskWriter::WriteBuffAndSync(size_t count) {
   file_->WriteFile(write_buff_ptr_, count);
-  file_->Sync();
+  // PERF-EXPERIMENT: fsync on every buffer flush serializes on HDD physical
+  // writes (~1-2s each); GNU sort/DuckDB/polars all just write to page cache.
+  // file_->Sync();
 }
 
 void DiskWriter::WriteBuff(SortArraySlice& slice) {
