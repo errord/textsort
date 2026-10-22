@@ -65,7 +65,7 @@ size_t Combine::FindSentinel(const Line& line) {
 void Combine::Merge(size_t sentinel, SortArray* sort_array) {
   SortArraySlice slice;
   MergeSort merge_sort;
-  slice.start = combine_array_->GetSortItems() + (sentinel == 0 ? 0 : sentinel - 1);
+  slice.start = combine_array_->GetSortItems() + sentinel;  // FIX: was sentinel-1, off-by-one caused duplicate+lost line
   slice.count = combine_array_->Count() - sentinel;
   merge_sort.MergeAndDeleteSortArray(sort_array, &slice, 1);
   combine_array_ = merge_sort.MoveMergeArray();

@@ -23,10 +23,10 @@ int main(int argc, char* argv[]) {
   }
 
   textsort::Config* config = textsort::GetConfig();
-  config->debug = 2;
+  config->debug = 1;
   config->input_file_path = std::string(argv[1]);
   config->output_file_path = std::string(argv[2]);
-  config->block_num = 13;
+  config->block_num = 28;  // 28 sort threads + 3 merge + 3 aux ~= 32 cores
   config->init_merge_thread_num = 3;
   config->fileblock_line_num = 20000000;
   config->top_k = 100000;

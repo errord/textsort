@@ -54,7 +54,7 @@ void UnSetBaseAddressPointer();
 
 #pragma pack(push, 4)
 struct Line {
-  uint32_t offset:24;
+  uint32_t offset;  // FIX: was 24-bit bitfield, capped whole file at 16MB; now full 32-bit (4GB)
   uint8_t length;
 
   Line() : offset(0), length(0) {};
@@ -62,9 +62,8 @@ struct Line {
 
   };
   void InitLinePtr(char* p) {
-    std::cout << PtrToHex((ptr_t)p) << " " << PtrToHex((ptr_t)GetBaseAddressPointer()) << " " << (uint64_t)(p - GetBaseAddressPointer()) << std::endl;
-    assert((p - GetBaseAddressPointer()) < 16777216);
-    offset = p - GetBaseAddressPointer();
+    // FIX: removed per-line debug cout and 16MB assert (unfinished WIP in HEAD)
+    offset = static_cast<uint32_t>(p - GetBaseAddressPointer());
   };
   const char* Ptr() const {
     return (const char*)(GetBaseAddressPointer() + offset);

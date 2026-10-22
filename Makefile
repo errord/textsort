@@ -3,7 +3,7 @@ LIBRARY_PATH=./
 SRC_PATH=./src
 TESTS_PATH=./tests
 #OPT=-O3 -DDEBUG -std=c++11
-OPT=-g -DDEBUG -std=c++11
+OPT=-O3 -DNDEBUG -std=c++11 -march=native
 
 all: textsort test
 
