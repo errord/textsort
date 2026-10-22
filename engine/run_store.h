@@ -136,11 +136,13 @@ struct SortedSource {
     if (is_mem) sp = &mem.sparse;
     else sp = &file.sparse;
 
-    // binary search: last entry with key <= akey
+    // binary search: last entry with key STRICTLY LESS than akey.
+    // (Using <= here would jump past earlier entries carrying the SAME key -
+    //  e.g. 50k identical lines - and silently drop their lines.)
     size_t lo = 0, hi = sp->size();
     while (lo < hi) {
       size_t mid = (lo + hi) / 2;
-      if ((*sp)[mid].key <= akey) lo = mid + 1;
+      if ((*sp)[mid].key < akey) lo = mid + 1;
       else hi = mid;
     }
     size_t idx = lo > 0 ? lo - 1 : 0;
