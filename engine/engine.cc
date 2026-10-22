@@ -60,6 +60,7 @@ struct Queue {
 
 struct GrepFilter : LineFilter {
   std::string needle;
+  GrepFilter() = default;
   explicit GrepFilter(const std::string& n) : needle(n) {}
   bool Keep(const char* p, uint32_t len) override {
     return memmem(p, len, needle.data(), needle.size()) != nullptr;
