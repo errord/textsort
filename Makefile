@@ -31,8 +31,15 @@ test: libtextsort.a
 	g++ -c $(TESTS_PATH)/test.cc -o test.o $(OPT) -I$(LIBRARY_INCLUDE)
 	g++ -o test $(OPT) test.o -L$(LIBRARY_PATH) -ltextsort -lpthread
 
+# ---- v2 engine: parallel text pipeline (sort / unique / head / grep) ----
+ENGINE_HDRS := $(wildcard engine/*.h)
+textsort2: engine/tsort.cc engine/engine.cc $(ENGINE_HDRS)
+	g++ -O3 -DNDEBUG -march=native -std=c++17 -pthread -o textsort2 \
+		engine/tsort.cc engine/engine.cc -Iengine
+
 clean:
 	rm -rf *.o
 	rm -rf *.a
 	rm -rf textsort
+	rm -rf textsort2
 	rm -rf test
