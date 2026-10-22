@@ -81,23 +81,25 @@ struct PhaseA {
   std::vector<SortedSource> sources;  // appended by workers (guarded by mu)
 };
 
-// Counting semaphore for output-slice backpressure (external mode).
-struct Semaphore {
+// Counting turn gate: slices start only inside the sliding window
+// [written_idx, written_idx + window). This guarantees the slice the writer
+// is waiting for is always inside the window -> no permit inversion deadlock.
+struct TurnGate {
   std::mutex mu;
   std::condition_variable cv;
-  int permits;
-  explicit Semaphore(int p) : permits(p) {}
-  void Acquire() {
+  int next_turn;   // slices with index < next_turn may start
+  int limit;       // cap == number of slices
+  explicit TurnGate(int window, int n) : next_turn(std::min(window, n)), limit(n) {}
+  void WaitTurn(int i) {
     std::unique_lock<std::mutex> lk(mu);
-    cv.wait(lk, [&] { return permits > 0; });
-    permits--;
+    cv.wait(lk, [&] { return i < next_turn; });
   }
-  void Release() {
+  void AdvanceAfter(int written_idx, int window) {
     {
       std::lock_guard<std::mutex> g(mu);
-      permits++;
+      next_turn = std::min(limit, written_idx + 1 + window);
     }
-    cv.notify_one();
+    cv.notify_all();
   }
 };
 
@@ -294,7 +296,8 @@ int RunEngine(const std::string& input, const std::string& output,
   // head_n limits total output; small enough => merge with single slice usage
   size_t global_head = cfg.head_n > 0 ? (size_t)cfg.head_n : 0;
 
-  Semaphore window(external ? 2 : slices + 1);
+  const int window = external ? 2 : slices;
+  TurnGate gate(window, slices);
 
   std::vector<std::thread> mergers;
   for (int i = 0; i < slices; i++) {
@@ -311,12 +314,13 @@ int RunEngine(const std::string& input, const std::string& output,
       LineView lo{nullptr, 0}, hi{nullptr, 0};
       if (i > 0) lo = LineView{anchors[i - 1].data(), (uint32_t)anchors[i - 1].size()};
       if (i + 1 < slices) hi = LineView{anchors[i].data(), (uint32_t)anchors[i].size()};
-      window.Acquire();
+      gate.WaitTurn(i);  // start only when inside the writer's sliding window
       // cross-slice unique: skip a leading line equal to the previous slice's
       // last emitted line (fetched after that slice finished)
       const std::string* skip = nullptr;
       if (cfg.unique && i > 0) {
-        while (!slice_done[i - 1]) std::this_thread::yield();
+        std::unique_lock<std::mutex> lk(done_mu);
+        done_cv.wait(lk, [&] { return slice_done[i - 1].load(); });
         skip = &results[i - 1].last;
         if (skip->empty()) skip = nullptr;
       }
@@ -326,8 +330,8 @@ int RunEngine(const std::string& input, const std::string& output,
         std::lock_guard<std::mutex> g(done_mu);
         done_set.insert(i);
       }
-      done_cv.notify_one();
-      // permit released by the writer after the slice is flushed
+      done_cv.notify_all();
+      // window slides forward when the writer flushes this slice
     });
   }
 
@@ -343,7 +347,6 @@ int RunEngine(const std::string& input, const std::string& output,
     std::unique_lock<std::mutex> lk(done_mu);
     done_cv.wait(lk, [&] { return done_set.count(i) > 0; });
     lk.unlock();
-    window.Release();  // this slice's buffer is (about to be) consumed
 
     SliceResult& s = results[i];
     const char* p = s.out.data();
@@ -381,6 +384,7 @@ int RunEngine(const std::string& input, const std::string& output,
     if (!s.last.empty()) prev_last = s.last;
     results[i].out.clear();
     results[i].out.shrink_to_fit();
+    gate.AdvanceAfter(i, window);  // let a new slice enter the window
   }
   ::close(out_fd);
   for (auto& t : mergers) t.join();
