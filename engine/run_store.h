@@ -23,6 +23,8 @@ struct RunFile {
   static bool Write(const std::string& path, const SortedMemRun& run, RunFile* out) {
     int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return false;
+    const char* p = run.packed.data();
+    size_t total = run.packed.size();
     // Write the sparse index and the payload in one pass.
     out->sparse.reserve(run.count / kIndexStride + 2);
     size_t o = 0;
@@ -32,7 +34,7 @@ struct RunFile {
       if (i % kIndexStride == 0) out->sparse.push_back({MakeKey(p + o + 4, len), o});
       o += 4 + len;
     }
-    size_t total = run.packed.size();
+    size_t written = 0;
     while (written < total) {
       ssize_t w = ::write(fd, p + written, total - written);
       if (w <= 0) { ::close(fd); return false; }
