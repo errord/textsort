@@ -13,6 +13,9 @@
 #include "ops.h"
 #include <string>
 #include <regex>
+#if defined(__x86_64__)
+#include <immintrin.h>  // AVX2 case-fold kernels (guarded, runtime-checked)
+#endif
 
 namespace ts {
 
@@ -39,7 +42,6 @@ inline const void* FindBytes(const char* hay, size_t hlen,
 // more than it saves).
 // ---------------------------------------------------------------------------
 #if defined(__x86_64__)
-#include <immintrin.h>
 inline bool CpuHasAvx2() {
   static const bool ok = __builtin_cpu_supports("avx2");
   return ok;
