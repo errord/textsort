@@ -47,6 +47,10 @@ struct LineOp {
     return OpResult::Inplace;  // identity by default
   }
   virtual const char* Name() const { return "op"; }
+  // Pure filters only ever return Drop or Inplace WITH `in` unchanged
+  // (no shrink, no materialize). When every op in the chain is pure the
+  // streaming engine can compact chunks in place - zero copies, zero allocs.
+  virtual bool PureFilter() const { return false; }
 };
 
 
@@ -57,6 +61,13 @@ struct LineOp {
 struct LineChain {
   std::vector<std::unique_ptr<LineOp>> ops;
   bool Empty() const { return ops.empty(); }
+  // true when every op is a pure filter (or the chain is empty): the chunk
+  // can be compacted in place, reusing the reader's buffer.
+  bool PureFilterChain() const {
+    for (auto& op : ops)
+      if (!op->PureFilter()) return false;
+    return true;
+  }
 };
 
 // Per-thread execution context for a LineChain.

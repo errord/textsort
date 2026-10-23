@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
+#include <vector>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -41,7 +42,11 @@ struct RawChunk {
 
 // Bounded FIFO of raw chunks. The byte cap bounds memory held between reader
 // and workers (workers call Release after freeing their chunk).
+// Chunks carry an EXPLICIT sequence number: parallel span readers stamp
+// seq = (span << kSpanShift) | k so the ordered hub (stream mode) still emits
+// file order while several reader threads read disjoint file spans at once.
 struct ChunkQueue {
+  static constexpr size_t kSpanShift = 44;  // seq = span<<44 | within-span idx
   std::mutex mu;
   std::condition_variable cv_space, cv_item;
   std::deque<RawChunk> items;
@@ -49,28 +54,116 @@ struct ChunkQueue {
   size_t inflight = 0, inflight_cap;
   size_t next_seq = 0;
   bool closed = false;
+  int readers_left = 1;  // the queue closes when every reader finishes
+  // per-span pipeline state for the ordered hub (stream mode): a chunk of
+  // span s is either in the deque (span_inq[s]) or held by a worker between
+  // Pop and Submit/drop (span_held[s]). Both counters move under `mu`, so
+  // "span s is drained" is decided atomically with the pop itself - there
+  // is no window in which a dequeued chunk is unaccounted for.
+  std::vector<size_t> span_inq, span_held;
+
+  static size_t SeqSpan(size_t seq) { return seq >> kSpanShift; }
 
   explicit ChunkQueue(size_t cap_bytes) : inflight_cap(cap_bytes) {}
 
-  bool Push(RawChunk c) {  // blocks until there is room
+  void AddReader(int n = 1) {
+    std::lock_guard<std::mutex> g(mu);
+    readers_left += n;
+  }
+  bool Push(RawChunk c, size_t seq) {  // blocks until there is room
     std::unique_lock<std::mutex> lk(mu);
-    cv_space.wait(lk, [&] { return closed || inflight + c.size <= inflight_cap; });
+    // inflight == 0: admit an oversized chunk (a single huge line can be
+    // larger than the whole cap; refusing it would wedge its reader forever)
+    cv_space.wait(lk, [&] {
+      return closed || inflight == 0 || inflight + c.size <= inflight_cap;
+    });
     if (closed) return false;
     items.push_back(c);
-    seqs.push_back(next_seq++);
+    seqs.push_back(seq);
+    size_t sp = SeqSpan(seq);
+    if (span_inq.size() <= sp) {
+      span_inq.resize(sp + 1, 0);
+      span_held.resize(sp + 1, 0);
+    }
+    span_inq[sp]++;
     inflight += c.size;
     cv_item.notify_one();
     return true;
+  }
+  bool Push(RawChunk c) {  // sequential self-numbering
+    size_t seq;
+    {
+      std::lock_guard<std::mutex> g(mu);
+      seq = next_seq++;
+    }
+    return Push(std::move(c), seq);
   }
   bool Pop(RawChunk* out, size_t* seq = nullptr) {
     std::unique_lock<std::mutex> lk(mu);
     cv_item.wait(lk, [&] { return !items.empty() || closed; });
     if (items.empty()) return false;
     *out = items.front();
-    if (seq) *seq = seqs.front();
+    size_t s = seqs.front();
+    if (seq) *seq = s;
     items.pop_front();
     seqs.pop_front();
+    size_t sp = SeqSpan(s);
+    if (sp < span_inq.size()) {
+      span_inq[sp]--;   // left the deque ...
+      span_held[sp]++;  // ... now held until Submit/drop (holds the gate)
+    }
     return true;
+  }
+  // the worker is done with a popped chunk (submitted to the hub, or
+  // dropped): the span gate may now advance past it.
+  void NoteSubmitted(size_t seq) {
+    std::lock_guard<std::mutex> g(mu);
+    size_t sp = SeqSpan(seq);
+    if (sp < span_held.size() && span_held[sp] > 0) span_held[sp]--;
+  }
+  // span drained: reader finished, nothing of it queued, nothing held.
+  bool SpanDrained(size_t sp) {
+    std::lock_guard<std::mutex> g(mu);
+    return sp >= span_inq.size() || (span_inq[sp] == 0 && span_held[sp] == 0);
+  }
+  // Stream mode: pop the LOWEST-seq chunk, but only when `gate` allows it
+  // (bounded look-ahead past the writer). Workers park HERE - holding
+  // nothing - so the exact chunk the writer waits for can always be picked
+  // up by some worker. Once closed, drain ungated (order is moot on
+  // teardown, and workers must reach their exit path).
+  template <class Gate>
+  bool PopGated(RawChunk* out, size_t* seq, Gate gate) {
+    std::unique_lock<std::mutex> lk(mu);
+    for (;;) {
+      cv_item.wait_for(lk, std::chrono::milliseconds(50),
+                       [&] { return !items.empty() || closed; });
+      if (items.empty()) {
+        if (closed) return false;  // drained
+        continue;                  // timeout: keep waiting for an item
+      }
+      size_t best = 0;
+      for (size_t i = 1; i < seqs.size(); i++)
+        if (seqs[i] < seqs[best]) best = i;
+      // Congestion override: workers may park ONLY while the queue is less
+      // than half full - then every normal-chunk reader still has room to
+      // push, so the chunk everyone waits for can always enter. Once the
+      // queue is half full, pop the min-seq chunk anyway to keep space
+      // flowing (memory stays bounded: queue cap + window + threads*chunk).
+      bool congested = inflight * 2 >= inflight_cap;
+      if (closed || congested || gate(seqs[best])) {
+        *out = items[best];
+        *seq = seqs[best];
+        items.erase(items.begin() + (std::ptrdiff_t)best);
+        seqs.erase(seqs.begin() + (std::ptrdiff_t)best);
+        size_t sp = SeqSpan(*seq);
+        if (sp < span_inq.size()) {
+          span_inq[sp]--;   // left the deque ...
+          span_held[sp]++;  // ... now held until Submit/drop (holds the gate)
+        }
+        return true;
+      }
+      cv_item.wait_for(lk, std::chrono::milliseconds(50));
+    }
   }
   void Release(size_t n) {
     {
@@ -79,37 +172,87 @@ struct ChunkQueue {
     }
     cv_space.notify_all();
   }
-  void Close() {
+  void Close() {  // one reader finished; close only when ALL are done
+    bool do_close = false;
     {
       std::lock_guard<std::mutex> g(mu);
-      closed = true;
+      if (--readers_left <= 0) { closed = true; do_close = true; }
     }
-    cv_item.notify_all();
-    cv_space.notify_all();
+    if (do_close) {
+      cv_item.notify_all();
+      cv_space.notify_all();
+    }
   }
 };
 
-// Sequential reader producing '\n'-aligned chunks (the final chunk may lack a
-// trailing '\n' at EOF). Reads straight into the chunk buffer: no extra copy.
-struct Reader {
+// Reader producing '\n'-aligned chunks. For seekable files, MULTIPLE
+// SpanReaders each own one byte span [start,end) and pread in parallel:
+//   * a line belongs to the span containing its FIRST byte (never lost,
+//     never duplicated across spans)
+//   * head: one pread at start-1 tells whether start sits mid-line; if so the
+//     partial first line is dropped (the previous span emits it whole via its
+//     tail extension)
+//   * tail: reading continues past `end` until the '\n' of any line that
+//     started inside the span
+//   * stdin/pipes: a single span with end==0, plain read(), until EOF
+struct SpanReader {
   int fd;
-  bool is_stdin;
+  bool is_pipe;
+  uint64_t start, end;  // [start, end); end==0 => until EOF (pipe)
+  int span_idx;
   size_t chunk_bytes;
   ChunkQueue* q;
   std::atomic<bool>* ok;
 
+  static constexpr size_t kTailStep = 64 << 10;  // step while finishing a tail line
+  static constexpr size_t kMaxLine = 3u << 30;
+
+  ssize_t ReadSome(char* p, size_t want, uint64_t at) {
+    if (is_pipe) return ::read(fd, p, want);  // sequential; `at` ignored
+    return ::pread(fd, p, want, (off_t)at);
+  }
+
   void Run() {
-    std::string pending;  // bytes after the last '\n' (never contains '\n')
+    uint64_t pos = start;
+    std::string buf;  // bytes after the last emitted '\n' (contains none)
+    bool drop_first = false;
+    if (!is_pipe && start > 0) {
+      char prev = 0;
+      ssize_t r = ::pread(fd, &prev, 1, (off_t)(start - 1));
+      drop_first = !(r == 1 && prev == '\n');
+    }
+    size_t seq_k = 0;
+    auto push = [&](RawChunk& c) {
+      size_t seq = ((size_t)(uint64_t)span_idx << ChunkQueue::kSpanShift) |
+                   (seq_k & ((size_t{1} << ChunkQueue::kSpanShift) - 1));
+      seq_k++;
+      return q->Push(std::move(c), seq);
+    };
+
     for (;;) {
+      bool span_done = !is_pipe && end != 0 && pos >= end;
+      if (span_done && buf.empty()) break;  // span fully emitted
+
+      size_t want;
+      if (span_done) {
+        want = kTailStep;  // finishing a line that started inside the span
+      } else if (is_pipe || end == 0) {
+        want = chunk_bytes;
+      } else {
+        want = std::min(chunk_bytes, (size_t)(end - pos));
+      }
+
       RawChunk c;
-      c.data = new (std::nothrow) char[pending.size() + chunk_bytes];
+      // +1 spare byte: lets downstream zero-copy compaction append a '\n' to
+      // an unterminated final line in place
+      c.data = new (std::nothrow) char[buf.size() + want + 1];
       if (!c.data) {
         fprintf(stderr, "tsort: out of memory (chunk)\n");
         ok->store(false);
         break;
       }
-      memcpy(c.data, pending.data(), pending.size());
-      ssize_t r = ::read(fd, c.data + pending.size(), chunk_bytes);
+      if (!buf.empty()) memcpy(c.data, buf.data(), buf.size());
+      ssize_t r = ReadSome(c.data + buf.size(), want, pos);
       if (r < 0) {
         if (errno == EINTR) { delete[] c.data; continue; }
         fprintf(stderr, "tsort: read error: %s\n", strerror(errno));
@@ -117,42 +260,113 @@ struct Reader {
         delete[] c.data;
         break;
       }
-      if (r == 0) {  // EOF
+      if (r == 0) {  // EOF: maybe a final line without '\n'
+        if (ok->load() && !buf.empty() && !drop_first) {
+          RawChunk t;
+          t.size = buf.size();
+          t.data = new (std::nothrow) char[t.size];
+          if (t.data) {
+            memcpy(t.data, buf.data(), t.size);
+            if (!push(t)) delete[] t.data;
+          }
+        }
         delete[] c.data;
+        buf.clear();
         break;
       }
-      size_t got = pending.size() + (size_t)r;
+      size_t got = buf.size() + (size_t)r;
+      pos += (uint64_t)r;
       size_t cut = 0;
-      for (ssize_t i = (ssize_t)got - 1; i >= 0; i--) {
-        if (c.data[i] == '\n') { cut = (size_t)i + 1; break; }
+      if (span_done) {
+        // tail: finish ONLY the line that started inside this span - emit
+        // up to the FIRST '\n'; every byte after it belongs to the next
+        // span, which emits it itself (nothing duplicated, nothing lost).
+        const char* nl = (const char*)memchr(c.data, '\n', got);
+        cut = nl ? (size_t)(nl - c.data) + 1 : 0;
+      } else {
+        for (ssize_t i = (ssize_t)got - 1; i >= 0; i--) {
+          if (c.data[i] == '\n') { cut = (size_t)i + 1; break; }
+        }
       }
-      if (cut == 0) {  // a line longer than the chunk: keep accumulating
-        pending.assign(c.data, got);
-        delete[] c.data;
-        if (pending.size() > (3u << 30)) {
+      if (cut == 0) {  // an unfinished (possibly very long) line
+        if (got > kMaxLine) {
           fprintf(stderr, "tsort: line exceeds the 3GB limit\n");
           ok->store(false);
+          delete[] c.data;
           break;
         }
+        buf.assign(c.data, got);
+        delete[] c.data;
         continue;
       }
-      pending.assign(c.data + cut, got - cut);
-      c.size = cut;
-      if (!q->Push(c)) { delete[] c.data; break; }
-    }
-    if (ok->load() && !pending.empty()) {  // final line without '\n'
-      RawChunk c;
-      c.size = pending.size();
-      c.data = new (std::nothrow) char[c.size];
-      if (c.data) {
-        memcpy(c.data, pending.data(), c.size);
-        if (!q->Push(c)) delete[] c.data;
+      if (span_done) {
+        // the boundary line is complete: push it (unless it is also our
+        // dropped head - a span shorter than one line) and finish the span
+        buf.clear();
+        c.size = cut;
+        if (drop_first) { c.size = 0; drop_first = false; }
+        if (c.size) { if (!push(c)) delete[] c.data; }
+        else { delete[] c.data; }
+        break;
       }
+      buf.assign(c.data + cut, got - cut);
+      c.size = cut;
+      if (drop_first) {  // strip the partial line owned by the previous span
+        const char* nl = (const char*)memchr(c.data, '\n', c.size);
+        size_t skip = nl ? (size_t)(nl - c.data) + 1 : c.size;
+        c.size -= std::min(skip, c.size);
+        memmove(c.data, c.data + skip, c.size);
+        drop_first = false;
+        if (c.size == 0) { delete[] c.data; continue; }
+      }
+      if (!push(c)) { delete[] c.data; break; }
     }
-    if (!is_stdin) ::close(fd);
-    q->Close();
+    q->Close();  // fd closed by the caller after ALL readers join
   }
 };
+
+// Launch span readers over the input. Regular files split into up to
+// min(threads, 32) spans (each >= 2 chunks); pipes use one reader.
+// The queue's reader count is pre-armed so Close() fires when all finish.
+// span_done[i] (if given, array size >= returned span count) is set by each
+// reader thread right before it exits.
+int StartReaders(int fd, bool is_stdin, size_t fsize, size_t chunk_bytes,
+                 int threads, ChunkQueue* q, std::atomic<bool>* ok,
+                 std::vector<std::thread>& out,
+                 std::atomic<bool>* span_done = nullptr,
+                 std::vector<uint64_t>* span_bases = nullptr) {
+  bool is_pipe = is_stdin;
+  if (!is_stdin && fsize == 0) is_pipe = true;  // e.g. /dev/stdin, fifos
+
+  int n = 1;
+  if (!is_pipe) {
+    size_t min_span = std::max<size_t>(chunk_bytes * 2, 8 << 20);
+    size_t by_size = fsize / min_span + (fsize % min_span ? 1 : 0);
+    n = (int)std::min<size_t>(std::max<size_t>(by_size, 1),
+                              (size_t)std::max(1, std::min(threads, 32)));
+  }
+  q->AddReader(n - 1);
+  for (int i = 0; i < n; i++) {
+    uint64_t s = 0, e = 0;
+    if (!is_pipe) {
+      s = (uint64_t)((unsigned __int128)fsize * (unsigned)i / (unsigned)n);
+      e = (uint64_t)((unsigned __int128)fsize * (unsigned)(i + 1) / (unsigned)n);
+    }
+    if (span_bases) span_bases->push_back(s);
+    out.emplace_back([=] {
+      SpanReader r{fd, is_pipe, s, e, i, chunk_bytes, q, ok};
+      r.Run();
+      if (span_done) span_done[i].store(true, std::memory_order_release);
+    });
+  }
+  return n;
+}
+
+// Close the input after every reader finished with it.
+void CloseInputAfter(int fd, bool is_stdin, std::vector<std::thread>& readers) {
+  for (auto& t : readers) t.join();
+  if (!is_stdin) ::close(fd);
+}
 
 int OpenInput(const std::string& input, bool* is_stdin) {
   if (input == "-") { *is_stdin = true; return 0; }
@@ -813,7 +1027,10 @@ int RunSortPipeline(const std::string& input, const std::string& output,
 
   ChunkQueue q(chunk_cap);
   std::atomic<bool> read_ok(true);
-  Reader reader{fd, is_stdin, cfg.chunk_bytes, &q, &read_ok};
+  size_t fsize = is_stdin ? 0 : FileSizeOf(fd);
+  std::vector<std::thread> reader_threads;
+  StartReaders(fd, is_stdin, fsize, cfg.chunk_bytes, cfg.threads, &q,
+               &read_ok, reader_threads);
 
   // ---------------- Phase A: read -> ops -> chunk sort -> runs ----------------
   struct PhaseA {
@@ -824,8 +1041,6 @@ int RunSortPipeline(const std::string& input, const std::string& output,
     bool io_failed = false;
     std::atomic<int> run_seq{0};
   } pa;
-
-  std::thread io_thread([&] { reader.Run(); });
 
   auto worker = [&] {
     ChainRunner runner;
@@ -868,7 +1083,7 @@ int RunSortPipeline(const std::string& input, const std::string& output,
   std::vector<std::thread> workers;
   workers.reserve(cfg.threads);
   for (int i = 0; i < cfg.threads; i++) workers.emplace_back(worker);
-  io_thread.join();
+  CloseInputAfter(fd, is_stdin, reader_threads);
   for (auto& w : workers) w.join();
   double t_sorted = NowSec();
   size_t n_file = 0;
@@ -1025,46 +1240,111 @@ int RunStreamPipeline(const std::string& input, const std::string& output,
                                       std::min<size_t>(cfg.mem_budget / 2, 1 << 30));
   ChunkQueue q(chunk_cap);
   std::atomic<bool> read_ok(true);
-  Reader reader{fd, is_stdin, cfg.chunk_bytes, &q, &read_ok};
-  std::thread io_thread([&] { reader.Run(); });
+  size_t fsize = is_stdin ? 0 : FileSizeOf(fd);
+  std::vector<std::thread> reader_threads;
+  // span completion flags: reader i sets its flag right before exiting. The
+  // ordered hub advances from span s to s+1 only when the flag is set AND
+  // every popped chunk of s has been submitted (span_pending[s] == 0). The
+  // array covers the max span count StartReaders may pick: min(threads, 32).
+  std::vector<std::atomic<bool>> span_done(
+      (size_t)std::max(1, std::min(cfg.threads, 32)));
+  std::vector<uint64_t> span_bases;  // span start offsets (seq -> byte pos)
+  int n_spans = StartReaders(fd, is_stdin, fsize, cfg.chunk_bytes, cfg.threads,
+                             &q, &read_ok, reader_threads, span_done.data(),
+                             &span_bases);
 
   // processed chunks land in an ordered hub
   struct Hub {
     std::mutex mu;
-    std::condition_variable cv_w, cv_p;
-    std::map<size_t, RawChunk> ready;
-    size_t inflight = 0, inflight_cap;
-    size_t next_pop = 0;
+    std::condition_variable cv_w;
+    std::map<size_t, RawChunk> ready;  // keyed by seq = span<<44 | k
+    size_t inflight = 0;  // bytes sitting in `ready` (stats/sanity)
     bool failed = false;
     bool input_closed = false;
-    explicit Hub(size_t cap) : inflight_cap(cap) {}
+    // per-span gating: the writer may advance to span s+1 only when span s
+    // is fully emitted (reader finished + nothing of it queued or held (see
+    // ChunkQueue::SpanDrained) + nothing of it left in `ready`).
+    int n_spans = 1;
+    const std::atomic<bool>* span_reader_done;  // set by reader threads
+    ChunkQueue* srcq;                           // drained-span oracle
+    int cur_span = 0;
+    // strict emission order: seq = span<<44 | k. Only the EXACT next seq is
+    // popped, so a slow worker holding (s,k) cannot let (s,k+1) jump ahead.
+    // The encoding is contiguous across spans, so k runs on; the gate reset
+    // below jumps it to the next span's head (spans may push 0 chunks).
+    std::atomic<size_t> next_seq{0};
+    // byte-order position of a chunk: span start + k * chunk size. Raw seqs
+    // from DIFFERENT spans are not comparable (span<<44 vs k bits) - byte
+    // positions are, and they drive the look-ahead window below.
+    std::vector<uint64_t> span_base;
+    size_t cbytes = 1;
+    size_t look_bytes = 0;
+    uint64_t SeqPos(size_t seq) const {
+      size_t s = seq >> ChunkQueue::kSpanShift;
+      size_t k = seq & ((size_t{1} << ChunkQueue::kSpanShift) - 1);
+      return (s < span_base.size() ? span_base[s] : 0) + (uint64_t)k * cbytes;
+    }
+    // may a worker take this chunk yet? Bounded look-ahead past the writer
+    // bounds `ready`; the worker parks in ChunkQueue::PopGated HOLDING
+    // NOTHING, so the exact chunk the writer waits for can always be picked
+    // up. No Submit-side sleeping anywhere: total memory is bounded
+    // structurally by queue cap + threads*chunk + look_bytes.
+    bool WithinLookahead(size_t seq) const {
+      return SeqPos(seq) <=
+             SeqPos(next_seq.load(std::memory_order_acquire)) + look_bytes;
+    }
+    Hub(int spans, const std::atomic<bool>* done, ChunkQueue* q,
+        std::vector<uint64_t> bases, size_t chunk, size_t look)
+        : n_spans(std::max(1, spans)), span_reader_done(done), srcq(q),
+          span_base(std::move(bases)), cbytes(chunk ? chunk : 1),
+          look_bytes(look) {}
+    void Kick() { cv_w.notify_all(); }  // dropped chunk: gate may advance
     void Submit(size_t seq, RawChunk c) {
-      std::unique_lock<std::mutex> lk(mu);
-      cv_p.wait(lk, [&] { return failed || inflight + c.size <= inflight_cap; });
+      std::lock_guard<std::mutex> g(mu);
       if (failed) { delete[] c.data; return; }
       inflight += c.size;
       ready[seq] = c;
       cv_w.notify_one();
     }
-    bool PopNext(RawChunk* out) {  // in seq order; false at end of input
-      std::unique_lock<std::mutex> lk(mu);
-      cv_w.wait(lk, [&] {
-        return failed || input_closed || ready.count(next_pop) > 0;
-      });
-      if (failed) return false;
-      auto it = ready.find(next_pop);
-      if (it == ready.end()) return false;  // closed and drained
-      *out = it->second;
-      ready.erase(it);
-      next_pop++;
-      return true;
+    bool PopNext(RawChunk* out) {  // strict file order across parallel spans
+      for (;;) {
+        if (failed) return false;
+        {  // exact next chunk ready? (hub state under `mu`)
+          std::lock_guard<std::mutex> g(mu);
+          auto it = ready.find(next_seq.load(std::memory_order_relaxed));
+          if (it != ready.end()) {
+            *out = it->second;
+            ready.erase(it);
+            next_seq.fetch_add(1, std::memory_order_release);
+            return true;
+          }
+        }
+        // cur_span drained? reader finished + nothing queued/held. Asked
+        // under the QUEUE's lock (atomic with the pops themselves - a chunk
+        // can never slip between the queue and this check), and NOT while
+        // holding `mu`.
+        if (span_reader_done[cur_span].load(std::memory_order_acquire) &&
+            srcq->SpanDrained((size_t)cur_span)) {
+          std::lock_guard<std::mutex> g(mu);
+          if (ready.find(next_seq.load(std::memory_order_relaxed)) ==
+              ready.end()) {  // re-validate
+            if (++cur_span >= n_spans) return false;
+            next_seq.store(
+                (size_t)(unsigned)cur_span << ChunkQueue::kSpanShift,
+                std::memory_order_release);
+            continue;  // gate advanced into the next span (k = 0)
+          }
+          continue;  // the exact chunk appeared meanwhile: pop it above
+        }
+        // wait for progress on cur_span; producers notify, timeout as a
+        // belt-and-braces against a missed edge
+        std::unique_lock<std::mutex> lk(mu);
+        cv_w.wait_for(lk, std::chrono::milliseconds(100));
+      }
     }
     void Release(size_t n) {
-      {
-        std::lock_guard<std::mutex> g(mu);
-        inflight = inflight >= n ? inflight - n : 0;
-      }
-      cv_p.notify_all();
+      std::lock_guard<std::mutex> g(mu);
+      inflight = inflight >= n ? inflight - n : 0;
     }
     void Fail() {
       {
@@ -1072,7 +1352,6 @@ int RunStreamPipeline(const std::string& input, const std::string& output,
         failed = true;
       }
       cv_w.notify_all();
-      cv_p.notify_all();
     }
     void CloseInput() {
       {
@@ -1081,10 +1360,13 @@ int RunStreamPipeline(const std::string& input, const std::string& output,
       }
       cv_w.notify_all();
     }
-  } hub(std::min<size_t>(cfg.mem_budget / 2, 1 << 30));
+  } hub(n_spans, span_done.data(), &q, std::move(span_bases), cfg.chunk_bytes,
+        std::max<size_t>(cfg.mem_budget / 2,
+                         ((size_t)cfg.threads + 4) * cfg.chunk_bytes));
 
   std::atomic<bool> stop_flag(false);
   std::atomic<int> workers_left{cfg.threads};
+  const bool pure = pipe->pre.PureFilterChain();  // zero-copy compaction
 
   auto worker = [&] {
     ChainRunner runner;
@@ -1093,10 +1375,52 @@ int RunStreamPipeline(const std::string& input, const std::string& output,
     for (;;) {
       RawChunk c;
       size_t seq = 0;
-      if (!q.Pop(&c, &seq)) break;
+      // lowest-seq chunk within the writer's look-ahead window; parks while
+      // gated holding NOTHING, so the writer's chunk is always pick-up-able.
+      // The pop also marks the span held (span-drain gate).
+      if (!q.PopGated(&c, &seq,
+                      [&](size_t s) { return hub.WithinLookahead(s); }))
+        break;
       if (stop_flag.load(std::memory_order_relaxed)) {
         delete[] c.data;
         q.Release(c.size);
+        q.NoteSubmitted(seq);  // dropped without a Submit: gate may advance
+        hub.Kick();
+        continue;
+      }
+      if (pure) {
+        // in-place compaction: surviving lines are memmoved to the chunk
+        // front; the reader's buffer is handed to the hub unchanged.
+        // (readers allocate one spare byte so an unterminated final line can
+        // get its '\n' written in place without a reallocation)
+        const size_t orig_size = c.size;
+        size_t w = 0, pos = 0;
+        while (pos < c.size) {
+          const char* nl =
+              (const char*)memchr(c.data + pos, '\n', c.size - pos);
+          size_t end = nl ? (size_t)(nl - c.data) : c.size;
+          LineView in(c.data + pos, (uint32_t)(end - pos));
+          bool keep = true;
+          if (!pipe->pre.Empty()) keep = runner.Run(in, &v);
+          if (keep) {
+            const LineView& lv = pipe->pre.Empty() ? in : v;  // aliases `in`
+            if (w != pos) memmove(c.data + w, lv.p, lv.len);
+            w += lv.len;
+            c.data[w++] = '\n';  // unterminated tail gets one too
+          }
+          pos = end + (nl ? 1 : 0);
+        }
+        c.size = w;
+        q.Release(orig_size);
+        if (c.size == 0) {  // whole chunk filtered out: no Submit at all
+          delete[] c.data;
+          q.NoteSubmitted(seq);
+          hub.Kick();
+          continue;
+        }
+        RawChunk pc = c;  // reuse the SAME memory: no copy, no alloc
+        hub.Submit(seq, pc);   // in `ready` now; Submit wakes the writer
+        q.NoteSubmitted(seq);  // AFTER Submit: chunk visible in `ready` first
         continue;
       }
       std::vector<char> out;
@@ -1118,9 +1442,14 @@ int RunStreamPipeline(const std::string& input, const std::string& output,
       RawChunk pc;
       pc.size = out.size();
       pc.data = new (std::nothrow) char[pc.size ? pc.size : 1];
-      if (!pc.data) { hub.Fail(); break; }
+      if (!pc.data) {
+        hub.Fail();
+        q.NoteSubmitted(seq);
+        break;
+      }
       if (pc.size) memcpy(pc.data, out.data(), pc.size);
-      hub.Submit(seq, pc);
+      hub.Submit(seq, pc);   // in `ready` now; Submit wakes the writer
+      q.NoteSubmitted(seq);  // AFTER Submit: chunk visible in `ready` first
     }
     if (workers_left.fetch_sub(1) == 1) hub.CloseInput();
   };
@@ -1132,7 +1461,7 @@ int RunStreamPipeline(const std::string& input, const std::string& output,
     q.Close();
     hub.Fail();
     for (auto& w : workers) w.join();
-    io_thread.join();
+    CloseInputAfter(fd, is_stdin, reader_threads);
     return 1;
   }
   WriterCtx wctx;
@@ -1150,7 +1479,7 @@ int RunStreamPipeline(const std::string& input, const std::string& output,
     hub.Release(pc.size);
   }
   for (auto& w : workers) w.join();
-  io_thread.join();
+  CloseInputAfter(fd, is_stdin, reader_threads);
   bool ok = wctx.Finish() && read_ok.load();
   ::close(out_fd);
   double t_done = NowSec();

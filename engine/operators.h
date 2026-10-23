@@ -41,6 +41,7 @@ struct GrepOp : LineOp {
                ? OpResult::Inplace
                : OpResult::Drop;
   }
+  bool PureFilter() const override { return true; }
   const char* Name() const override { return "grep"; }
 };
 
@@ -52,6 +53,7 @@ struct GrepVOp : LineOp {
                ? OpResult::Drop
                : OpResult::Inplace;
   }
+  bool PureFilter() const override { return true; }
   const char* Name() const override { return "grepv"; }
 };
 
@@ -64,6 +66,7 @@ struct PrefixOp : LineOp {
                ? OpResult::Inplace
                : OpResult::Drop;
   }
+  bool PureFilter() const override { return true; }
   const char* Name() const override { return "prefix"; }
 };
 
@@ -77,6 +80,7 @@ struct SuffixOp : LineOp {
                ? OpResult::Inplace
                : OpResult::Drop;
   }
+  bool PureFilter() const override { return true; }
   const char* Name() const override { return "suffix"; }
 };
 
@@ -89,6 +93,7 @@ struct RegexOp : LineOp {
     tmp.assign(in->p, in->len);
     return std::regex_search(tmp, re) ? OpResult::Inplace : OpResult::Drop;
   }
+  bool PureFilter() const override { return true; }
   const char* Name() const override { return "regex"; }
 };
 
@@ -280,6 +285,7 @@ struct SampleOp : LineOp {
                ? OpResult::Inplace
                : OpResult::Drop;
   }
+  bool PureFilter() const override { return true; }
   const char* Name() const override { return "sample"; }
 };
 
@@ -293,6 +299,7 @@ struct MinLenOp : LineOp {
   OpResult Process(LineView* in, std::vector<char>*) override {
     return in->len >= n ? OpResult::Inplace : OpResult::Drop;
   }
+  bool PureFilter() const override { return true; }
   const char* Name() const override { return "min-len"; }
 };
 
@@ -302,6 +309,7 @@ struct MaxLenOp : LineOp {
   OpResult Process(LineView* in, std::vector<char>*) override {
     return in->len <= n ? OpResult::Inplace : OpResult::Drop;
   }
+  bool PureFilter() const override { return true; }
   const char* Name() const override { return "max-len"; }
 };
 
