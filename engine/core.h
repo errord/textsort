@@ -33,11 +33,20 @@ namespace ts {
 // Big-endian load => numeric uint64 order == lexicographic byte order.
 // Zero padding => "AB" gets key 0x414200.. < "ABC" 0x414243.., matching
 // LC_ALL=C prefix semantics.
+//
+// Fast path: len >= 8 => one unaligned 8-byte load + one bswap (3 machine
+// instructions) instead of an 8-iteration serial shift-or loop. The memcpy
+// load reads exactly 8 bytes that the line provably owns; short lines (< 8)
+// keep the byte loop (it also handles the zero padding) and never overread.
 inline uint64_t MakeKey(const char* p, uint32_t len) {
+  if (len >= 8) {
+    uint64_t k;
+    memcpy(&k, p, 8);
+    return __builtin_bswap64(k);
+  }
   uint64_t k = 0;
-  uint32_t n = len < 8 ? len : 8;
-  for (uint32_t i = 0; i < n; i++) k = (k << 8) | (uint8_t)p[i];
-  return k << (8 * (8 - n));
+  for (uint32_t i = 0; i < len; i++) k = (k << 8) | (uint8_t)p[i];
+  return k << (8 * (8 - len));
 }
 
 struct LineRef {  // 16 bytes, one per line inside a chunk

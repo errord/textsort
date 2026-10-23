@@ -31,6 +31,54 @@ inline const void* FindBytes(const char* hay, size_t hlen,
 }
 
 // ---------------------------------------------------------------------------
+// AVX2 ASCII case helpers (x86_64 only; runtime-checked once).
+// VecAnyInRange: does [p, p+len) contain any byte in [lo, hi]?
+// VecFold:       dst[i] = in-range bytes folded by delta, others copied.
+// Both process 32 bytes per iteration and finish with a scalar tail; lines
+// shorter than 32 bytes stay fully scalar (the intrinsic setup would cost
+// more than it saves).
+// ---------------------------------------------------------------------------
+#if defined(__x86_64__)
+#include <immintrin.h>
+inline bool CpuHasAvx2() {
+  static const bool ok = __builtin_cpu_supports("avx2");
+  return ok;
+}
+inline bool VecAnyInRange(const char* p, uint32_t len, char lo, char hi) {
+  const __m256i vlo = _mm256_set1_epi8((char)(lo - 1));
+  const __m256i vhi = _mm256_set1_epi8((char)(hi + 1));
+  uint32_t i = 0;
+  for (; i + 32 <= len; i += 32) {
+    __m256i v = _mm256_loadu_si256((const __m256i*)(p + i));
+    __m256i m = _mm256_and_si256(_mm256_cmpgt_epi8(v, vlo),
+                                 _mm256_cmpgt_epi8(vhi, v));
+    if (!_mm256_testz_si256(m, m)) return true;
+  }
+  for (; i < len; i++)
+    if (p[i] >= lo && p[i] <= hi) return true;
+  return false;
+}
+inline void VecFold(char* dst, const char* p, uint32_t len, char lo, char hi,
+                    int delta) {
+  const __m256i vlo = _mm256_set1_epi8((char)(lo - 1));
+  const __m256i vhi = _mm256_set1_epi8((char)(hi + 1));
+  const __m256i vd = _mm256_set1_epi8((char)delta);
+  uint32_t i = 0;
+  for (; i + 32 <= len; i += 32) {
+    __m256i v = _mm256_loadu_si256((const __m256i*)(p + i));
+    __m256i m = _mm256_and_si256(_mm256_cmpgt_epi8(v, vlo),
+                                 _mm256_cmpgt_epi8(vhi, v));
+    __m256i d = _mm256_and_si256(m, vd);
+    _mm256_storeu_si256((__m256i*)(dst + i), _mm256_add_epi8(v, d));
+  }
+  for (; i < len; i++) {
+    char c = p[i];
+    dst[i] = (c >= lo && c <= hi) ? char(c + delta) : c;
+  }
+}
+#endif  // __x86_64__
+
+// ---------------------------------------------------------------------------
 // grep / grep -v (substring), prefix / suffix
 // ---------------------------------------------------------------------------
 struct GrepOp : LineOp {
@@ -194,15 +242,30 @@ struct CutOp : LineOp {
 // ---------------------------------------------------------------------------
 struct LowerOp : LineOp {
   OpResult Process(LineView* in, std::vector<char>* out) override {
-    bool changed = false;
-    for (uint32_t i = 0; i < in->len; i++)
-      if (in->p[i] >= 'A' && in->p[i] <= 'Z') { changed = true; break; }
+    bool changed;
+#if defined(__x86_64__)
+    if (in->len >= 32 && CpuHasAvx2()) {
+      changed = VecAnyInRange(in->p, in->len, 'A', 'Z');
+    } else
+#endif
+    {
+      changed = false;
+      for (uint32_t i = 0; i < in->len; i++)
+        if (in->p[i] >= 'A' && in->p[i] <= 'Z') { changed = true; break; }
+    }
     if (!changed) return OpResult::Inplace;
     out->clear();
-    out->reserve(in->len);
-    for (uint32_t i = 0; i < in->len; i++) {
-      char c = in->p[i];
-      out->push_back(c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c);
+    out->resize(in->len);
+#if defined(__x86_64__)
+    if (in->len >= 32 && CpuHasAvx2()) {
+      VecFold(out->data(), in->p, in->len, 'A', 'Z', 'a' - 'A');
+    } else
+#endif
+    {
+      for (uint32_t i = 0; i < in->len; i++) {
+        char c = in->p[i];
+        (*out)[i] = c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c;
+      }
     }
     return OpResult::Materialized;
   }
@@ -211,15 +274,30 @@ struct LowerOp : LineOp {
 
 struct UpperOp : LineOp {
   OpResult Process(LineView* in, std::vector<char>* out) override {
-    bool changed = false;
-    for (uint32_t i = 0; i < in->len; i++)
-      if (in->p[i] >= 'a' && in->p[i] <= 'z') { changed = true; break; }
+    bool changed;
+#if defined(__x86_64__)
+    if (in->len >= 32 && CpuHasAvx2()) {
+      changed = VecAnyInRange(in->p, in->len, 'a', 'z');
+    } else
+#endif
+    {
+      changed = false;
+      for (uint32_t i = 0; i < in->len; i++)
+        if (in->p[i] >= 'a' && in->p[i] <= 'z') { changed = true; break; }
+    }
     if (!changed) return OpResult::Inplace;
     out->clear();
-    out->reserve(in->len);
-    for (uint32_t i = 0; i < in->len; i++) {
-      char c = in->p[i];
-      out->push_back(c >= 'a' && c <= 'z' ? char(c - 'a' + 'A') : c);
+    out->resize(in->len);
+#if defined(__x86_64__)
+    if (in->len >= 32 && CpuHasAvx2()) {
+      VecFold(out->data(), in->p, in->len, 'a', 'z', 'A' - 'a');
+    } else
+#endif
+    {
+      for (uint32_t i = 0; i < in->len; i++) {
+        char c = in->p[i];
+        (*out)[i] = c >= 'a' && c <= 'z' ? char(c - 'a' + 'A') : c;
+      }
     }
     return OpResult::Materialized;
   }
