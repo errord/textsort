@@ -41,20 +41,37 @@ struct SortedMemRun {
 
 // Comparators on LineRef against a chunk base pointer, driven by the
 // pipeline's sort order (key mode + direction).
+//
+// LineRef.off encodes TWO buffers: off < base_size addresses the raw chunk
+// (base + off); off >= base_size addresses the materialized-lines buffer
+// (extra + off - base_size). The comparator MUST decode both - comparing
+// an extra line as base + off reads past the chunk allocation (the bug
+// behind the --lower segfault: key-equal rows made pdqsort memcmp through
+// a dangling base + off).
 struct ChunkCmpAsc {
   const char* base;
+  const char* extra;      // materialized-lines buffer (may be null if unused)
+  size_t base_size;
   const SortKey* sk;
+  const char* Ptr(const LineRef& r) const {
+    return r.off < base_size ? base + r.off : extra + (r.off - base_size);
+  }
   bool operator()(const LineRef& x, const LineRef& y) const {
     if (x.key != y.key) return x.key < y.key;
-    return sk->Cmp3Lines(base + x.off, x.len, base + y.off, y.len) < 0;
+    return sk->Cmp3Lines(Ptr(x), x.len, Ptr(y), y.len) < 0;
   }
 };
 struct ChunkCmpDesc {
   const char* base;
+  const char* extra;
+  size_t base_size;
   const SortKey* sk;
+  const char* Ptr(const LineRef& r) const {
+    return r.off < base_size ? base + r.off : extra + (r.off - base_size);
+  }
   bool operator()(const LineRef& x, const LineRef& y) const {
     if (x.key != y.key) return x.key > y.key;
-    return sk->Cmp3Lines(base + x.off, x.len, base + y.off, y.len) > 0;
+    return sk->Cmp3Lines(Ptr(x), x.len, Ptr(y), y.len) > 0;
   }
 };
 
@@ -116,11 +133,13 @@ inline SortedMemRun SortChunk(const char* data, size_t size,
   run.count = refs.size();
   if (run.count == 0) return run;
 
-  // 2) sort
+  // 2) sort (comparators decode both the chunk and the extra buffer)
   if (order.descending)
-    pdqsort(refs.data(), refs.data() + run.count, ChunkCmpDesc{data, &sk});
+    pdqsort(refs.data(), refs.data() + run.count,
+            ChunkCmpDesc{data, extra->data(), size, &sk});
   else
-    pdqsort(refs.data(), refs.data() + run.count, ChunkCmpAsc{data, &sk});
+    pdqsort(refs.data(), refs.data() + run.count,
+            ChunkCmpAsc{data, extra->data(), size, &sk});
 
   // 3) compact: emit [u32 len][bytes] in sorted order
   run.packed.resize([&] {
