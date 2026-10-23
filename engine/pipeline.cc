@@ -284,9 +284,10 @@ struct SpanReader {
         const char* nl = (const char*)memchr(c.data, '\n', got);
         cut = nl ? (size_t)(nl - c.data) + 1 : 0;
       } else {
-        for (ssize_t i = (ssize_t)got - 1; i >= 0; i--) {
-          if (c.data[i] == '\n') { cut = (size_t)i + 1; break; }
-        }
+        // reverse scan for the last '\n' - vectorized (simd.h), replaces
+        // the byte-by-byte backward walk
+        const char* rnl = VecFindLast(c.data, got, '\n');
+        if (rnl) cut = (size_t)(rnl - c.data) + 1;
       }
       if (cut == 0) {  // an unfinished (possibly very long) line
         if (got > kMaxLine) {
@@ -696,8 +697,10 @@ bool ShardOneFile(const std::string& path, int in_fd,
       buf.resize(got);
     }
     size_t cut = 0;
-    for (ssize_t i = (ssize_t)got - 1; i >= 0; i--)
-      if (buf[i] == '\n') { cut = (size_t)i + 1; break; }
+    {
+      const char* rnl = VecFindLast(buf.data(), got, '\n');
+      if (rnl) cut = (size_t)(rnl - buf.data()) + 1;
+    }
     if (cut == 0) {
       pending.assign(buf.data(), got);
       continue;
@@ -709,9 +712,10 @@ bool ShardOneFile(const std::string& path, int in_fd,
       LineView in(buf.data() + pos, (uint32_t)(end - pos));
       if (!apply_ops || pipe->pre.Empty() || runner.Run(in, &v)) {
         const LineView& keep = apply_ops && !pipe->pre.Empty() ? v : in;
-        uint64_t h = SampleOp::HashBytes(keep.p, keep.len);
-        shards[(int)(h % (uint64_t)R)].Append(keep.p, keep.len);
-        shards[(int)(h % (uint64_t)R)].Append("\n", 1);
+        uint64_t h = ShardHash(keep.p, keep.len);
+        uint32_t s = (uint32_t)(h % (uint64_t)R);
+        shards[s].Append(keep.p, keep.len);
+        shards[s].Append("\n", 1);
       }
       pos = end + (nl ? 1 : 0);
     }
@@ -722,9 +726,10 @@ bool ShardOneFile(const std::string& path, int in_fd,
     LineView in(pending.data(), (uint32_t)pending.size());
     if (!apply_ops || pipe->pre.Empty() || runner.Run(in, &v)) {
       const LineView& keep = apply_ops && !pipe->pre.Empty() ? v : in;
-      uint64_t h = SampleOp::HashBytes(keep.p, keep.len);
-      shards[(int)(h % (uint64_t)R)].Append(keep.p, keep.len);
-      shards[(int)(h % (uint64_t)R)].Append("\n", 1);
+      uint64_t h = ShardHash(keep.p, keep.len);
+      uint32_t s = (uint32_t)(h % (uint64_t)R);
+      shards[s].Append(keep.p, keep.len);
+      shards[s].Append("\n", 1);
     }
   }
   if (opened) ::close(fd);

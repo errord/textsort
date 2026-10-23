@@ -7,6 +7,7 @@
 #define TS_POSTSORT_H_
 
 #include "ops.h"
+#include "simd.h"
 #include <string>
 #include <vector>
 #include <utility>
@@ -114,15 +115,9 @@ struct WcPost : PostOp {
   bool Feed(const LineView& in, std::vector<char>*) override {
     lines++;
     bytes += in.len + 1;  // content + the stripped '\n'
-    bool in_w = false;    // inside a word?
-    for (uint32_t i = 0; i < in.len; i++) {
-      if (BlankB(in.p[i])) {
-        in_w = false;
-      } else {
-        if (!in_w) words++;
-        in_w = true;
-      }
-    }
+    // vector word count: blank -> non-blank transitions via movemask +
+    // popcount (simd.h); equals the awk-NF byte loop, ~8x fewer instructions
+    words += (long)VecCountWordStarts(in.p, in.len, ' ', '\t');
     return true;
   }
   void Flush(std::vector<char>* emit) override {

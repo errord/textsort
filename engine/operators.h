@@ -11,11 +11,9 @@
 #define TS_OPERATORS_H_
 
 #include "ops.h"
+#include "simd.h"
 #include <string>
 #include <regex>
-#if defined(__x86_64__)
-#include <immintrin.h>  // AVX2 case-fold kernels (guarded, runtime-checked)
-#endif
 
 namespace ts {
 
@@ -34,54 +32,9 @@ inline const void* FindBytes(const char* hay, size_t hlen,
 }
 
 // ---------------------------------------------------------------------------
-// AVX2 ASCII case helpers (x86_64 only; runtime-checked once).
-// VecAnyInRange: does [p, p+len) contain any byte in [lo, hi]?
-// VecFold:       dst[i] = in-range bytes folded by delta, others copied.
-// Both process 32 bytes per iteration and finish with a scalar tail; lines
-// shorter than 32 bytes stay fully scalar (the intrinsic setup would cost
-// more than it saves).
-// ---------------------------------------------------------------------------
-#if defined(__x86_64__)
-inline bool CpuHasAvx2() {
-  static const bool ok = __builtin_cpu_supports("avx2");
-  return ok;
-}
-inline bool VecAnyInRange(const char* p, uint32_t len, char lo, char hi) {
-  const __m256i vlo = _mm256_set1_epi8((char)(lo - 1));
-  const __m256i vhi = _mm256_set1_epi8((char)(hi + 1));
-  uint32_t i = 0;
-  for (; i + 32 <= len; i += 32) {
-    __m256i v = _mm256_loadu_si256((const __m256i*)(p + i));
-    __m256i m = _mm256_and_si256(_mm256_cmpgt_epi8(v, vlo),
-                                 _mm256_cmpgt_epi8(vhi, v));
-    if (!_mm256_testz_si256(m, m)) return true;
-  }
-  for (; i < len; i++)
-    if (p[i] >= lo && p[i] <= hi) return true;
-  return false;
-}
-inline void VecFold(char* dst, const char* p, uint32_t len, char lo, char hi,
-                    int delta) {
-  const __m256i vlo = _mm256_set1_epi8((char)(lo - 1));
-  const __m256i vhi = _mm256_set1_epi8((char)(hi + 1));
-  const __m256i vd = _mm256_set1_epi8((char)delta);
-  uint32_t i = 0;
-  for (; i + 32 <= len; i += 32) {
-    __m256i v = _mm256_loadu_si256((const __m256i*)(p + i));
-    __m256i m = _mm256_and_si256(_mm256_cmpgt_epi8(v, vlo),
-                                 _mm256_cmpgt_epi8(vhi, v));
-    __m256i d = _mm256_and_si256(m, vd);
-    _mm256_storeu_si256((__m256i*)(dst + i), _mm256_add_epi8(v, d));
-  }
-  for (; i < len; i++) {
-    char c = p[i];
-    dst[i] = (c >= lo && c <= hi) ? char(c + delta) : c;
-  }
-}
-#endif  // __x86_64__
-
-// ---------------------------------------------------------------------------
 // grep / grep -v (substring), prefix / suffix
+// (AVX2 byte kernels now live in simd.h: VecAnyInRange / VecFold /
+//  VecFindInRange / VecCountWordStarts / ShardHash)
 // ---------------------------------------------------------------------------
 struct GrepOp : LineOp {
   std::string needle;
@@ -218,20 +171,23 @@ struct CutOp : LineOp {
     int field = 0;
     bool wrote = false;
     const char* seg = in->p;
-    for (const char* q = in->p;; q++) {
-      if (q == end || *q == delim) {
-        field++;  // [seg, q) is field #field
-        for (auto& r : ranges) {
-          if (field >= r.lo && field <= r.hi) {
-            if (wrote) out->push_back(delim);
-            out->insert(out->end(), seg, q);
-            wrote = true;
-            break;
-          }
+    const char* q = in->p;
+    for (;;) {
+      // jump to the next delimiter with memchr (SIMD inside libc) instead
+      // of walking byte-by-byte
+      const char* d = (const char*)memchr(q, delim, (size_t)(end - q));
+      const char* stop = d ? d : end;
+      field++;  // [seg, stop) is field #field
+      for (auto& r : ranges) {
+        if (field >= r.lo && field <= r.hi) {
+          if (wrote) out->push_back(delim);
+          out->insert(out->end(), seg, stop);
+          wrote = true;
+          break;
         }
-        if (q == end) break;
-        seg = q + 1;
       }
+      if (!d) break;
+      seg = q = d + 1;
     }
     if (!wrote) return OpResult::Inplace;
     return OpResult::Materialized;
@@ -554,7 +510,11 @@ struct MaskEmailOp : LineOp {
     bool hit = false;
     uint32_t i = 0, emit = 0;  // [emit, i) already copied
     while (i < len) {
-      if (p[i] != '@') { i++; continue; }
+      // jump straight to the next '@' (memchr is SIMD-accelerated; lines
+      // without any '@' - the common case - cost one vector scan)
+      const char* at = (const char*)memchr(p + i, '@', len - i);
+      if (!at) break;
+      i = (uint32_t)(at - p);
       // local part: scan back over local chars (>=1)
       uint32_t ls = i;
       while (ls > 0 && LocalChar(p[ls - 1])) ls--;
@@ -606,6 +566,12 @@ struct MaskIpOp : LineOp {
     bool hit = false;
     uint32_t i = 0, emit = 0;  // [emit, i) already copied
     while (i < len) {
+      if (p[i] < '0' || p[i] > '9') {
+        // skip to the next digit-run start with a vector search
+        uint32_t nxt = VecFindInRange(p, len, i, '0', '9');
+        if (nxt >= len) break;
+        i = nxt;
+      }
       uint32_t v;
       uint32_t j = Digits(p, len, i, &v);
       bool cand =
