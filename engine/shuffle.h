@@ -31,14 +31,18 @@ struct ShardWriter {
   int fd = -1;
   std::vector<char> buf;
   size_t total = 0;
+  // 4MB flush threshold: a fully-random shard hash (CRC) interleaves 32+
+  // writers; larger blocks keep each write big and the destination buffer's
+  // append tail cache-hot for longer runs.
+  static constexpr size_t kFlush = 4 << 20;
   bool Open(const std::string& path) {
     fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    buf.reserve(1 << 20);
+    buf.reserve(kFlush + (2 << 20));
     return fd >= 0;
   }
   void Append(const char* p, size_t n) {
     buf.insert(buf.end(), p, p + n);
-    if (buf.size() >= (1 << 20)) Flush();
+    if (buf.size() >= kFlush) Flush();
   }
   void Flush() {
     size_t w = 0;
