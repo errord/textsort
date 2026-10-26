@@ -1,7 +1,7 @@
 #!/bin/zsh
 # test_all.sh - full correctness suite for the v3 engine (old + new operators)
 set -u
-T=/Users/biluochun/work/error.d/project/textsort/textsort3
+T=/Users/biluochun/work/error.d/project/bigtext/bigtext
 D=/tmp/tsb
 cd $D
 FAIL=0

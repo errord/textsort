@@ -5,7 +5,7 @@ TESTS_PATH=./tests
 #OPT=-O3 -DDEBUG -std=c++11
 OPT=-O3 -DNDEBUG -std=c++11 -march=native
 
-all: textsort test
+all: bigtext
 
 libtextsort.a:
 	g++ -c $(SRC_PATH)/allocation.cc -o allocation.o $(OPT) -I$(LIBRARY_INCLUDE)
@@ -32,10 +32,10 @@ test: libtextsort.a
 	g++ -o test $(OPT) test.o -L$(LIBRARY_PATH) -ltextsort -lpthread
 
 # ---- v3 engine: composable text operators, unlimited data ----
-ENGINE_SRC := engine/tsort.cc engine/pipeline.cc
+ENGINE_SRC := engine/bigtext.cc engine/pipeline.cc
 ENGINE_HDRS := $(wildcard engine/*.h)
-textsort3: $(ENGINE_SRC) $(ENGINE_HDRS)
-	$(CXX) -O3 -DNDEBUG -march=native -std=c++17 -pthread -o textsort3 \
+bigtext: $(ENGINE_SRC) $(ENGINE_HDRS)
+	$(CXX) -O3 -DNDEBUG -march=native -std=c++17 -pthread -o bigtext \
 		$(ENGINE_SRC) -Iengine
 
 tools/gen_data: tools/gen_data.cc
@@ -46,6 +46,6 @@ clean:
 	rm -rf *.a
 	rm -rf textsort
 	rm -rf textsort2
-	rm -rf textsort3
+	rm -rf bigtext
 	rm -rf tools/gen_data
 	rm -rf test

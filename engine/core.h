@@ -2,8 +2,8 @@
 //
 // Line semantics match `LC_ALL=C sort`: raw byte lexicographic order, where a
 // shorter line that is a prefix of a longer one sorts first ("AB" < "ABC").
-#ifndef TS_CORE_H_
-#define TS_CORE_H_
+#ifndef BT_CORE_H_
+#define BT_CORE_H_
 
 #ifdef __linux__
 #ifndef _GNU_SOURCE
@@ -27,7 +27,7 @@
 #include <sys/sysctl.h>
 #endif
 
-namespace ts {
+namespace bt {
 
 // 8-byte big-endian prefix of a line, zero-padded when the line is shorter.
 // Big-endian load => numeric uint64 order == lexicographic byte order.
@@ -350,4 +350,4 @@ inline size_t PhysicalMemBytes() {
 
 }  // namespace ts
 
-#endif  // TS_CORE_H_
+#endif  // BT_CORE_H_

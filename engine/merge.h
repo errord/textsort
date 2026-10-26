@@ -6,8 +6,8 @@
 // The sink either forwards records into a new run file (pre-merge passes)
 // or turns lines into '\n'-terminated output blocks (the ordered writer).
 // Nothing is materialized beyond one block: input size is unlimited.
-#ifndef TS_MERGE_H_
-#define TS_MERGE_H_
+#ifndef BT_MERGE_H_
+#define BT_MERGE_H_
 
 #include "core.h"
 #include "ops.h"
@@ -16,7 +16,7 @@
 
 #include <atomic>
 
-namespace ts {
+namespace bt {
 
 // Consumer of merged, fully post-processed output lines.
 struct LineSink {
@@ -151,4 +151,4 @@ inline MergeStats MergeRange(const std::vector<SortedSource*>& sources,
 
 }  // namespace ts
 
-#endif  // TS_MERGE_H_
+#endif  // BT_MERGE_H_

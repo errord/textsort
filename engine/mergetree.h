@@ -3,13 +3,13 @@
 // Replaces a binary heap: the winner index lives at the root and each replay
 // walks one path up with a single compare per level, and each line's 8-byte
 // key is computed once when it enters the tree (not once per compare).
-#ifndef TS_MERGETREE_H_
-#define TS_MERGETREE_H_
+#ifndef BT_MERGETREE_H_
+#define BT_MERGETREE_H_
 
 #include "core.h"
 #include <vector>
 
-namespace ts {
+namespace bt {
 
 class MergeTree {
  public:
@@ -101,4 +101,4 @@ class MergeTree {
 
 }  // namespace ts
 
-#endif  // TS_MERGETREE_H_
+#endif  // BT_MERGETREE_H_

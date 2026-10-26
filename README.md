@@ -1,20 +1,20 @@
-# textsort
+# bigtext
 
-**tsort (v3)** — a composable, parallel text-operator engine for the LLM era.
-It processes unstructured line-oriented text (logs, corpora, JSONL, TSV) with
-**unbounded input size**: every execution path streams, and intermediate
+**bigtext** — a composable, parallel large-text processing engine for the LLM
+era. It processes unstructured line-oriented text (logs, corpora, JSONL, TSV)
+with **unbounded input size**: every execution path streams, and intermediate
 results spill to disk under a memory budget.
 
 ```
-make textsort3          # the v3 engine
-make tools/gen_data     # LLM-ish corpus generator for testing
+make bigtext          # the engine
+make tools/gen_data   # LLM-ish corpus generator for testing
 ```
 
 ## Why
 
 LLM data pipelines grind through hundreds of GB of messy text. The classic
 toolbox (`grep | sort | uniq | awk`) is sequential and memory-bound; dataframes
-(polars/duckdb) load everything into RAM. tsort fuses the same Unix-operator
+(polars/duckdb) load everything into RAM. bigtext fuses the same Unix-operator
 semantics into one parallel engine whose memory stays bounded no matter how
 big the input is — 20GB, 200GB, or a pipe that never ends.
 

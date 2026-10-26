@@ -7,15 +7,15 @@
 // Semantics deliberately mirror the classic Unix text tools so pipelines can
 // be cross-checked byte-for-byte:  grep / grep -v / sed s///g / cut -d -f /
 // tr a-z A-Z / awk trim.
-#ifndef TS_OPERATORS_H_
-#define TS_OPERATORS_H_
+#ifndef BT_OPERATORS_H_
+#define BT_OPERATORS_H_
 
 #include "ops.h"
 #include "simd.h"
 #include <string>
 #include <regex>
 
-namespace ts {
+namespace bt {
 
 inline const void* FindBytes(const char* hay, size_t hlen,
                              const char* needle, size_t nlen) {
@@ -618,4 +618,4 @@ struct MaskIpOp : LineOp {
 
 }  // namespace ts
 
-#endif  // TS_OPERATORS_H_
+#endif  // BT_OPERATORS_H_

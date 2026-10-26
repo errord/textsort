@@ -1,14 +1,14 @@
 // chunk_sort.h - parse a raw chunk, apply the fused streaming operators,
 // sort it in the pipeline order, and compact it into a packed run buffer of
 // [u32 len][bytes] records plus a sparse key index.
-#ifndef TS_CHUNK_SORT_H_
-#define TS_CHUNK_SORT_H_
+#ifndef BT_CHUNK_SORT_H_
+#define BT_CHUNK_SORT_H_
 
 #include "core.h"
 #include "ops.h"
 #include "pdqsort.h"
 
-namespace ts {
+namespace bt {
 
 // Sparse index entry: one per kIndexStride lines of the packed buffer.
 struct SparseEntry {
@@ -185,4 +185,4 @@ struct MemCursor {
 
 }  // namespace ts
 
-#endif  // TS_CHUNK_SORT_H_
+#endif  // BT_CHUNK_SORT_H_

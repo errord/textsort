@@ -18,14 +18,14 @@
 //                        fan-in-limited pre-merges + parallel final merge
 // Every path streams its output through bounded buffers: input size is
 // unlimited.
-#ifndef TS_OPS_H_
-#define TS_OPS_H_
+#ifndef BT_OPS_H_
+#define BT_OPS_H_
 
 #include "core.h"
 #include <memory>
 #include <vector>
 
-namespace ts {
+namespace bt {
 
 // ---------------------------------------------------------------------------
 // Streaming line operator: one input line -> 0 or 1 output line.
@@ -178,4 +178,4 @@ struct PipelineDesc {
 
 }  // namespace ts
 
-#endif  // TS_OPS_H_
+#endif  // BT_OPS_H_

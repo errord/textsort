@@ -5,8 +5,8 @@
 // Pass 2 (pipelined): shard i is loaded into RAM, Fisher-Yates shuffled with
 // seed+i, and streamed to the output while shard i+1 is being shuffled.
 // Memory: max shard size ~= total / R; R is chosen so this fits the budget.
-#ifndef TS_SHUFFLE_H_
-#define TS_SHUFFLE_H_
+#ifndef BT_SHUFFLE_H_
+#define BT_SHUFFLE_H_
 
 #include "core.h"
 #include "ops.h"
@@ -23,7 +23,7 @@
 #include <string>
 #include <random>
 
-namespace ts {
+namespace bt {
 
 namespace shuffle_detail {
 
@@ -69,4 +69,4 @@ int RunShufflePipeline(const std::string& input, const std::string& output,
 
 }  // namespace ts
 
-#endif  // TS_SHUFFLE_H_
+#endif  // BT_SHUFFLE_H_

@@ -27,7 +27,7 @@
 #include <random>
 #include <algorithm>
 
-namespace ts {
+namespace bt {
 
 namespace {
 
@@ -247,7 +247,7 @@ struct SpanReader {
       // an unterminated final line in place
       c.data = new (std::nothrow) char[buf.size() + want + 1];
       if (!c.data) {
-        fprintf(stderr, "tsort: out of memory (chunk)\n");
+        fprintf(stderr, "bigtext: out of memory (chunk)\n");
         ok->store(false);
         break;
       }
@@ -255,7 +255,7 @@ struct SpanReader {
       ssize_t r = ReadSome(c.data + buf.size(), want, pos);
       if (r < 0) {
         if (errno == EINTR) { delete[] c.data; continue; }
-        fprintf(stderr, "tsort: read error: %s\n", strerror(errno));
+        fprintf(stderr, "bigtext: read error: %s\n", strerror(errno));
         ok->store(false);
         delete[] c.data;
         break;
@@ -291,7 +291,7 @@ struct SpanReader {
       }
       if (cut == 0) {  // an unfinished (possibly very long) line
         if (got > kMaxLine) {
-          fprintf(stderr, "tsort: line exceeds the 3GB limit\n");
+          fprintf(stderr, "bigtext: line exceeds the 3GB limit\n");
           ok->store(false);
           delete[] c.data;
           break;
@@ -373,7 +373,7 @@ int OpenInput(const std::string& input, bool* is_stdin) {
   if (input == "-") { *is_stdin = true; return 0; }
   *is_stdin = false;
   int fd = ::open(input.c_str(), O_RDONLY);
-  if (fd < 0) fprintf(stderr, "tsort: cannot open input %s\n", input.c_str());
+  if (fd < 0) fprintf(stderr, "bigtext: cannot open input %s\n", input.c_str());
   return fd;
 }
 
@@ -381,7 +381,7 @@ int OpenInput(const std::string& input, bool* is_stdin) {
 int OpenOutput(const std::string& output) {
   if (output == "-") return 1;
   int fd = ::open(output.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0) fprintf(stderr, "tsort: cannot open output %s\n", output.c_str());
+  if (fd < 0) fprintf(stderr, "bigtext: cannot open output %s\n", output.c_str());
   return fd;
 }
 
@@ -436,7 +436,7 @@ struct ReverseBuf {
     if (data.size() + v.len > cap_bytes) {
       if (!warned) {
         warned = true;
-        fprintf(stderr, "tsort: --tail buffer exceeds %.1fGB; use a smaller N\n",
+        fprintf(stderr, "bigtext: --tail buffer exceeds %.1fGB; use a smaller N\n",
                 cap_bytes / 1e9);
       }
       return false;
@@ -772,7 +772,7 @@ int RunShufflePipeline(const std::string& input, const std::string& output,
     for (int i = 0; i < (int)first.size(); i++)
       first[i] = TempPath(cfg.tmpdir, "shard", i);
     if (!ShardOneFile(input, fd, first, pipe, /*apply_ops=*/true)) {
-      fprintf(stderr, "tsort: sharding failed\n");
+      fprintf(stderr, "bigtext: sharding failed\n");
       return 1;
     }
     shards = std::move(first);
@@ -1074,7 +1074,7 @@ int RunSortPipeline(const std::string& input, const std::string& output,
           s.file = std::move(rf);
           pa.sources.push_back(std::move(s));
         } else {
-          fprintf(stderr, "tsort: failed to write run %s\n", path.c_str());
+          fprintf(stderr, "bigtext: failed to write run %s\n", path.c_str());
           pa.io_failed = true;
         }
       } else {

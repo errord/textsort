@@ -3,8 +3,8 @@
 // stored in the pipeline's sort order (ascending, or descending for
 // --reverse/--tail). A sparse key index kept in RAM locates the first record
 // >= a given anchor with one binary search + a short sequential scan.
-#ifndef TS_RUN_STORE_H_
-#define TS_RUN_STORE_H_
+#ifndef BT_RUN_STORE_H_
+#define BT_RUN_STORE_H_
 
 #include "core.h"
 #include "chunk_sort.h"  // SparseEntry, kIndexStride
@@ -12,7 +12,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-namespace ts {
+namespace bt {
 
 struct RunFile {
   std::string path;
@@ -248,4 +248,4 @@ struct SortedSource {
 
 }  // namespace ts
 
-#endif  // TS_RUN_STORE_H_
+#endif  // BT_RUN_STORE_H_

@@ -1,17 +1,17 @@
-// tsort.cc - CLI for the v3 text pipeline engine.
+// bigtext.cc - CLI for the v3 text pipeline engine.
 //
 // Pipelines compose operator flags; order-dependent operators imply the sort
 // barrier automatically. Semantics mirror the classic Unix tools:
-//   tsort in out                          LC_ALL=C sort
-//   tsort -u in out                       sort -u
-//   tsort -c in out                       sort | uniq -c
-//   tsort --freq 20 in out                sort | uniq -c | sort -k1,1rn | head -20
-//   tsort --grep ERROR --head 100 in out  grep ERROR | sort | head -100
-//   tsort --tail 50 in out                sort | tail -50
-//   tsort --shuffle in out                shuf
-//   tsort --grep ERROR in out             parallel grep (no sort)
+//   bigtext in out                          LC_ALL=C sort
+//   bigtext -u in out                       sort -u
+//   bigtext -c in out                       sort | uniq -c
+//   bigtext --freq 20 in out                sort | uniq -c | sort -k1,1rn | head -20
+//   bigtext --grep ERROR --head 100 in out  grep ERROR | sort | head -100
+//   bigtext --tail 50 in out                sort | tail -50
+//   bigtext --shuffle in out                shuf
+//   bigtext --grep ERROR in out             parallel grep (no sort)
 //
-// usage: tsort [operators] [engine options] input [output|-]
+// usage: bigtext [operators] [engine options] input [output|-]
 #include "pipeline.h"
 #include "operators.h"
 #include "postsort.h"
@@ -24,9 +24,9 @@
 
 static void Usage() {
   fprintf(stderr,
-      "tsort v3 - composable text operators, unlimited data\n"
+      "bigtext - the large-text processing engine\n"
       "\n"
-      "usage: tsort [operators] [engine] input [output|-]\n"
+      "usage: bigtext [operators] [engine] input [output|-]\n"
       "  input '-' = stdin, output '-' = stdout\n"
       "\n"
       "stream operators (fused before/after the barrier, in CLI order):\n"
@@ -85,8 +85,8 @@ static char ParseDelim(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
-  ts::PipelineDesc pipe;
-  ts::EngineConfig cfg;
+  bt::PipelineDesc pipe;
+  bt::EngineConfig cfg;
   bool verbose = true;
   std::string in, out;
   bool have_cut = false;
@@ -104,13 +104,13 @@ int main(int argc, char** argv) {
     std::string a = argv[i];
     auto next = [&](const char* what) -> std::string {
       if (i + 1 >= argc) {
-        fprintf(stderr, "tsort: %s needs a value\n", what);
+        fprintf(stderr, "bigtext: %s needs a value\n", what);
         exit(2);
       }
       return argv[++i];
     };
-    if (a == "-u" || a == "--unique") pipe.dedup = ts::DedupMode::Unique;
-    else if (a == "-c" || a == "--count") pipe.dedup = ts::DedupMode::Count;
+    if (a == "-u" || a == "--unique") pipe.dedup = bt::DedupMode::Unique;
+    else if (a == "-c" || a == "--count") pipe.dedup = bt::DedupMode::Count;
     else if (a == "--freq") freq_n = atol(next("--freq").c_str());
     else if (a == "-r" || a == "--reverse") pipe.reverse = true;
     else if (a == "--head") pipe.head_n = atol(next("--head").c_str());
@@ -122,49 +122,49 @@ int main(int argc, char** argv) {
     else if (a == "--nl") need_nl = true;
     else if (a == "--wc") need_wc = true;
     else if (a == "--grep")
-      pipe.pre.ops.push_back(std::make_unique<ts::GrepOp>(next("--grep")));
+      pipe.pre.ops.push_back(std::make_unique<bt::GrepOp>(next("--grep")));
     else if (a == "--grepv")
-      pipe.pre.ops.push_back(std::make_unique<ts::GrepVOp>(next("--grepv")));
+      pipe.pre.ops.push_back(std::make_unique<bt::GrepVOp>(next("--grepv")));
     else if (a == "--prefix")
-      pipe.pre.ops.push_back(std::make_unique<ts::PrefixOp>(next("--prefix")));
+      pipe.pre.ops.push_back(std::make_unique<bt::PrefixOp>(next("--prefix")));
     else if (a == "--suffix")
-      pipe.pre.ops.push_back(std::make_unique<ts::SuffixOp>(next("--suffix")));
+      pipe.pre.ops.push_back(std::make_unique<bt::SuffixOp>(next("--suffix")));
     else if (a == "--regex")
-      pipe.pre.ops.push_back(std::make_unique<ts::RegexOp>(next("--regex")));
+      pipe.pre.ops.push_back(std::make_unique<bt::RegexOp>(next("--regex")));
     else if (a == "--replace" || a == "--replace-first") {
       std::string from = next("--replace");
       std::string to = next("--replace");
       pipe.pre.ops.push_back(
-          std::make_unique<ts::ReplaceOp>(from, to, a == "--replace"));
+          std::make_unique<bt::ReplaceOp>(from, to, a == "--replace"));
     } else if (a == "--cut") {
       have_cut = true;
       cut_list = next("--cut");
     } else if (a == "--delim") {
       cut_delim = ParseDelim(next("--delim"));
     } else if (a == "--lower")
-      pipe.pre.ops.push_back(std::make_unique<ts::LowerOp>());
+      pipe.pre.ops.push_back(std::make_unique<bt::LowerOp>());
     else if (a == "--upper")
-      pipe.pre.ops.push_back(std::make_unique<ts::UpperOp>());
+      pipe.pre.ops.push_back(std::make_unique<bt::UpperOp>());
     else if (a == "--trim")
-      pipe.pre.ops.push_back(std::make_unique<ts::TrimOp>(squeeze));
+      pipe.pre.ops.push_back(std::make_unique<bt::TrimOp>(squeeze));
     else if (a == "--squeeze")
       squeeze = true;
     else if (a == "--sample")
       pipe.pre.ops.push_back(
-          std::make_unique<ts::SampleOp>(atof(next("--sample").c_str())));
+          std::make_unique<bt::SampleOp>(atof(next("--sample").c_str())));
     else if (a == "--min-len")
-      pipe.pre.ops.push_back(std::make_unique<ts::MinLenOp>(
+      pipe.pre.ops.push_back(std::make_unique<bt::MinLenOp>(
           (uint32_t)atol(next("--min-len").c_str())));
     else if (a == "--max-len")
-      pipe.pre.ops.push_back(std::make_unique<ts::MaxLenOp>(
+      pipe.pre.ops.push_back(std::make_unique<bt::MaxLenOp>(
           (uint32_t)atol(next("--max-len").c_str())));
     else if (a == "--jsonl")
       pipe.pre.ops.push_back(
-          std::make_unique<ts::JsonlFieldOp>(next("--jsonl")));
+          std::make_unique<bt::JsonlFieldOp>(next("--jsonl")));
     else if (a == "--mask-email")
-      pipe.pre.ops.push_back(std::make_unique<ts::MaskEmailOp>());
+      pipe.pre.ops.push_back(std::make_unique<bt::MaskEmailOp>());
     else if (a == "--mask-ip")
-      pipe.pre.ops.push_back(std::make_unique<ts::MaskIpOp>());
+      pipe.pre.ops.push_back(std::make_unique<bt::MaskIpOp>());
     else if (a == "--shuffle") pipe.shuffle = true;
     else if (a == "--no-sort" || a == "--stream") pipe.no_sort = true;
     else if (a == "--seed") cfg.shuffle_seed = (unsigned)atol(next("--seed").c_str());
@@ -183,7 +183,7 @@ int main(int argc, char** argv) {
       else { Usage(); return 2; }
     }
     else if (!a.empty() && a[0] == '-') {
-      fprintf(stderr, "tsort: unknown option %s\n", a.c_str());
+      fprintf(stderr, "bigtext: unknown option %s\n", a.c_str());
       Usage();
       return 2;
     } else if (in.empty()) in = a;
@@ -199,63 +199,63 @@ int main(int argc, char** argv) {
   // --squeeze rewrites a pending trim op
   if (squeeze) {
     for (auto& op : pipe.pre.ops)
-      if (strcmp(op->Name(), "trim") == 0) static_cast<ts::TrimOp*>(op.get())->squeeze = true;
+      if (strcmp(op->Name(), "trim") == 0) static_cast<bt::TrimOp*>(op.get())->squeeze = true;
   }
   if (have_cut)
-    pipe.pre.ops.push_back(std::make_unique<ts::CutOp>(cut_delim, cut_list));
+    pipe.pre.ops.push_back(std::make_unique<bt::CutOp>(cut_delim, cut_list));
 
   // ---- sort key ----
   if (by_len && (key_field > 0 || numeric || dedup_key > 0)) {
-    fprintf(stderr, "tsort: --by-len cannot combine with --key/--num/--dedup-key\n");
+    fprintf(stderr, "bigtext: --by-len cannot combine with --key/--num/--dedup-key\n");
     return 2;
   }
   if (key_field > 0 && dedup_key > 0 && key_field != dedup_key) {
-    fprintf(stderr, "tsort: --key and --dedup-key disagree on the field\n");
+    fprintf(stderr, "bigtext: --key and --dedup-key disagree on the field\n");
     return 2;
   }
   if (by_len) {
-    pipe.sort_key.mode = ts::SortKey::Length;
+    pipe.sort_key.mode = bt::SortKey::Length;
   } else if (numeric) {
-    pipe.sort_key.mode = ts::SortKey::Numeric;
+    pipe.sort_key.mode = bt::SortKey::Numeric;
     if (key_field > 0 || dedup_key > 0) {
       pipe.sort_key.field = key_field > 0 ? key_field : dedup_key;
       pipe.sort_key.delim = cut_delim;
     }
   } else if (key_field > 0 || dedup_key > 0) {
-    pipe.sort_key.mode = ts::SortKey::Field;
+    pipe.sort_key.mode = bt::SortKey::Field;
     pipe.sort_key.field = key_field > 0 ? key_field : dedup_key;
     pipe.sort_key.delim = cut_delim;
   }
   if (dedup_key > 0) {
-    if (pipe.dedup != ts::DedupMode::None) {
-      fprintf(stderr, "tsort: --dedup-key cannot combine with -u/-c\n");
+    if (pipe.dedup != bt::DedupMode::None) {
+      fprintf(stderr, "bigtext: --dedup-key cannot combine with -u/-c\n");
       return 2;
     }
-    pipe.dedup = ts::DedupMode::Unique;  // equality via the sort key
+    pipe.dedup = bt::DedupMode::Unique;  // equality via the sort key
   }
 
   // ---- semantic planning ----
-  // tsort sorts by default (the tool's name is its contract); --no-sort
+  // bigtext sorts by default (the tool's name is its contract); --no-sort
   // selects the pure streaming mode (parallel grep/sed-style pipelines).
   if (pipe.shuffle) {
-    if (pipe.dedup != ts::DedupMode::None || pipe.reverse || freq_n > 0 ||
+    if (pipe.dedup != bt::DedupMode::None || pipe.reverse || freq_n > 0 ||
         pipe.tail_n > 0 || need_nl || need_wc ||
-        pipe.sort_key.mode != ts::SortKey::Whole) {
+        pipe.sort_key.mode != bt::SortKey::Whole) {
       fprintf(stderr,
-              "tsort: --shuffle cannot combine with order operators\n");
+              "bigtext: --shuffle cannot combine with order operators\n");
       return 2;
     }
     pipe.need_sort = false;  // shuffle replaces the barrier entirely
   } else {
     pipe.need_sort = !pipe.no_sort;
-    if (pipe.dedup != ts::DedupMode::None || pipe.reverse || freq_n > 0)
+    if (pipe.dedup != bt::DedupMode::None || pipe.reverse || freq_n > 0)
       pipe.need_sort = true;
     if (pipe.no_sort) {
-      if (pipe.dedup != ts::DedupMode::None || pipe.reverse || freq_n > 0 ||
+      if (pipe.dedup != bt::DedupMode::None || pipe.reverse || freq_n > 0 ||
           pipe.tail_n > 0 || key_field > 0 || dedup_key > 0 || numeric ||
           by_len) {
         fprintf(stderr,
-                "tsort: --no-sort cannot combine with -u/-c/-r/--freq/--tail/"
+                "bigtext: --no-sort cannot combine with -u/-c/-r/--freq/--tail/"
                 "--key/--num/--by-len (they need order)\n");
         return 2;
       }
@@ -263,49 +263,49 @@ int main(int argc, char** argv) {
   }
   if (pipe.tail_n > 0) {
     if (pipe.reverse) {
-      fprintf(stderr, "tsort: --tail and --reverse conflict\n");
+      fprintf(stderr, "bigtext: --tail and --reverse conflict\n");
       return 2;
     }
     if (pipe.head_n >= 0) {
-      fprintf(stderr, "tsort: --tail and --head conflict\n");
+      fprintf(stderr, "bigtext: --tail and --head conflict\n");
       return 2;
     }
     pipe.need_sort = true;
     pipe.reverse = true;  // engine sorts descending; writer reverses at flush
   }
   if (freq_n > 0) {
-    if (pipe.dedup != ts::DedupMode::None) {
-      fprintf(stderr, "tsort: --freq cannot combine with -u/-c\n");
+    if (pipe.dedup != bt::DedupMode::None) {
+      fprintf(stderr, "bigtext: --freq cannot combine with -u/-c\n");
       return 2;
     }
     if (pipe.tail_n > 0) {
-      fprintf(stderr, "tsort: --freq cannot combine with --tail\n");
+      fprintf(stderr, "bigtext: --freq cannot combine with --tail\n");
       return 2;
     }
     if (need_nl || need_wc) {
-      fprintf(stderr, "tsort: --freq cannot combine with --nl/--wc\n");
+      fprintf(stderr, "bigtext: --freq cannot combine with --nl/--wc\n");
       return 2;
     }
     pipe.need_sort = true;
     pipe.post.ops.push_back(
-        std::make_unique<ts::FreqPost>((size_t)freq_n, pipe.sort_key));
+        std::make_unique<bt::FreqPost>((size_t)freq_n, pipe.sort_key));
   }
-  if (need_nl) pipe.post.ops.push_back(std::make_unique<ts::NlPost>());
-  if (need_wc) pipe.post.ops.push_back(std::make_unique<ts::WcPost>());
+  if (need_nl) pipe.post.ops.push_back(std::make_unique<bt::NlPost>());
+  if (need_wc) pipe.post.ops.push_back(std::make_unique<bt::WcPost>());
   if (pipe.shuffle) {
     if (pipe.need_sort || pipe.tail_n > 0) {
-      fprintf(stderr, "tsort: --shuffle cannot combine with order operators\n");
+      fprintf(stderr, "bigtext: --shuffle cannot combine with order operators\n");
       return 2;
     }
     if (freq_n > 0) {
-      fprintf(stderr, "tsort: --freq needs a deterministic order\n");
+      fprintf(stderr, "bigtext: --freq needs a deterministic order\n");
       return 2;
     }
   }
   if (pipe.tail_n > 0 && !pipe.need_sort) pipe.need_sort = true;
 
   if (verbose) {
-    fprintf(stderr, "[tsort] plan:");
+    fprintf(stderr, "[bigtext] plan:");
     if (pipe.shuffle) fprintf(stderr, " shuffle");
     if (!pipe.pre.Empty()) {
       fprintf(stderr, " pre[");
@@ -315,13 +315,13 @@ int main(int argc, char** argv) {
     if (pipe.need_sort) {
       const char* dir = pipe.reverse || pipe.tail_n > 0 ? "desc" : "asc";
       const char* kn = "line";
-      if (pipe.sort_key.mode == ts::SortKey::Field) kn = "field";
-      else if (pipe.sort_key.mode == ts::SortKey::Numeric) kn = "num";
-      else if (pipe.sort_key.mode == ts::SortKey::Length) kn = "len";
+      if (pipe.sort_key.mode == bt::SortKey::Field) kn = "field";
+      else if (pipe.sort_key.mode == bt::SortKey::Numeric) kn = "num";
+      else if (pipe.sort_key.mode == bt::SortKey::Length) kn = "len";
       fprintf(stderr, " sort(%s by %s)", dir, kn);
     }
-    if (pipe.dedup == ts::DedupMode::Unique) fprintf(stderr, " unique");
-    if (pipe.dedup == ts::DedupMode::Count) fprintf(stderr, " count");
+    if (pipe.dedup == bt::DedupMode::Unique) fprintf(stderr, " unique");
+    if (pipe.dedup == bt::DedupMode::Count) fprintf(stderr, " count");
     if (!pipe.post.Empty())
       for (auto& op : pipe.post.ops) fprintf(stderr, " %s", op->Name());
     if (pipe.head_n >= 0) fprintf(stderr, " head=%ld", pipe.head_n);
@@ -329,5 +329,5 @@ int main(int argc, char** argv) {
     fprintf(stderr, "\n");
   }
 
-  return ts::RunPipeline(in, out, &pipe, cfg, verbose);
+  return bt::RunPipeline(in, out, &pipe, cfg, verbose);
 }

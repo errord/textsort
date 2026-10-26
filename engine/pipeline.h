@@ -10,14 +10,14 @@
 //   * shuffle          - hash shard to disk (parallel), shuffle each shard in
 //                        RAM, stream out in shard order
 // Every path bounds its memory: input size is unlimited.
-#ifndef TS_PIPELINE_H_
-#define TS_PIPELINE_H_
+#ifndef BT_PIPELINE_H_
+#define BT_PIPELINE_H_
 
 #include "ops.h"
 #include <string>
 #include <atomic>
 
-namespace ts {
+namespace bt {
 
 struct EngineConfig {
   int threads = 0;               // 0 => hardware_concurrency
@@ -35,4 +35,4 @@ int RunPipeline(const std::string& input, const std::string& output,
 
 }  // namespace ts
 
-#endif  // TS_PIPELINE_H_
+#endif  // BT_PIPELINE_H_

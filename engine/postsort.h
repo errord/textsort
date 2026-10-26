@@ -3,8 +3,8 @@
 // --unique and --count (uniq -c) are INLINED in the merge kernel for speed
 // (they only need adjacent-line state); the operators here handle everything
 // that needs fuller state: head caps inside a post chain, top-K frequency.
-#ifndef TS_POSTSORT_H_
-#define TS_POSTSORT_H_
+#ifndef BT_POSTSORT_H_
+#define BT_POSTSORT_H_
 
 #include "ops.h"
 #include "simd.h"
@@ -12,7 +12,7 @@
 #include <vector>
 #include <utility>
 
-namespace ts {
+namespace bt {
 
 // ---------------------------------------------------------------------------
 // head N as a post op (stops the pipeline after N lines)
@@ -148,4 +148,4 @@ struct NlPost : PostOp {
 
 }  // namespace ts
 
-#endif  // TS_POSTSORT_H_
+#endif  // BT_POSTSORT_H_

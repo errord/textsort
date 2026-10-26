@@ -7,8 +7,8 @@
 // Dispatch: AVX2 fast paths on x86_64 (runtime-checked), NEON on aarch64,
 // plain scalar loops elsewhere. Short inputs stay scalar - intrinsic setup
 // would cost more than it saves.
-#ifndef TS_SIMD_H_
-#define TS_SIMD_H_
+#ifndef BT_SIMD_H_
+#define BT_SIMD_H_
 
 #include <cstdint>
 #include <cstring>
@@ -18,7 +18,7 @@
 #include <arm_neon.h>
 #endif
 
-namespace ts {
+namespace bt {
 
 // ---------------------------------------------------------------------------
 // x86_64-only helpers (guarded individually below)
@@ -208,4 +208,4 @@ inline uint64_t ShardHash(const char* p, uint32_t len) {
 
 }  // namespace ts
 
-#endif  // TS_SIMD_H_
+#endif  // BT_SIMD_H_
